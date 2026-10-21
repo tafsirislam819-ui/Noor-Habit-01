@@ -1,5 +1,14 @@
-{
-  "version": "1.0.0",
-  "apkUrl": "https://example.com/replace-with-your-apk-link/noor-habit.apk",
-  "notes": "First release"
-}
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Twitterbot
+Allow: /
+
+User-agent: facebookexternalhit
+Allow: /
+
+User-agent: *
+Allow: /

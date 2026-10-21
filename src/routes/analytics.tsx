@@ -1,643 +1,820 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useState, useMemo, useEffect } from "react";
 import {
-  Check,
-  Bell,
+  Flame,
+  ChevronLeft,
+  ChevronRight,
+  Calendar as CalendarIcon,
   CheckCircle2,
+  XCircle,
+  Clock,
+  Sparkles,
+  SlidersHorizontal,
   Target,
   ListTodo,
-  Sparkles,
-  ChevronRight,
-  Flame,
-  X,
-  Clock,
-  Smartphone,
-  Eye,
-  ShieldCheck,
-  Play,
-  HelpCircle,
-  TrendingDown,
-  AlertTriangle,
+  ChevronLeft as SwipeLeft,
+  ChevronRight as SwipeRight,
 } from "lucide-react";
-import { SmartPermissionsModal } from "@/components/SmartPermissionsModal";
 import {
-  useApp,
-  today,
-  formatAppTime,
-  type PrayerKey,
-  type Goal,
-} from "@/lib/store";
+  PieChart, Pie, Cell, ResponsiveContainer, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid,
+} from "recharts";
+import { useApp, today, PRAYERS, formatAppTime } from "@/lib/store";
 import { useT } from "@/lib/i18n";
-import { NotifyToggle } from "@/components/NotifyToggle";
-import { requestPermission } from "@/lib/notify";
 import { cn } from "@/lib/utils";
-import {
-  getNativeReelsStats,
-  triggerMockReel,
-  openNativeAccessibilitySettings,
-  openNativeOverlaySettings,
-  openNativeUsageSettings,
-  type NativeReelsStats,
-} from "@/lib/native-reels";
-import { InteractiveOnboarding } from "@/components/InteractiveOnboarding";
+import { getNativeReelsStats, refreshNativeReelsStats, type NativeReelsStats } from "@/lib/native-reels";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/analytics")({
   head: () => ({
     meta: [
-      { title: "Noor Habit — Daily Prayers, Goals & Habits" },
-      { name: "description", content: "Track namaz, actionable goals, daily habits and to-do lists." },
-      { property: "og:title", content: "Noor Habit — Daily Prayers, Goals & Habits" },
-      { property: "og:description", content: "Track namaz, actionable goals, daily habits and to-do lists." },
+      { title: "Analytics & Islamic Calendar — Noor Habit" },
+      { name: "description", content: "Interactive calendar, missed prayers and habit analytics, Islamic events." },
+      { property: "og:title", content: "Analytics & Islamic Calendar — Noor Habit" },
+      { property: "og:description", content: "Interactive calendar, missed prayers and habit analytics, Islamic events." },
     ],
   }),
-  component: Dashboard,
+  component: Analytics,
 });
 
-function Dashboard() {
+/** Tabular Hijri calculation with moon sighting offset */
+function getHijriInfo(date: Date, offsetDays: number = 0, isBangla: boolean = true) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + offsetDays);
+
+  let day = d.getDate();
+  let month = d.getMonth();
+  let year = d.getFullYear();
+
+  let m = month + 1;
+  let y = year;
+  if (m < 3) {
+    y -= 1;
+    m += 12;
+  }
+
+  const a = Math.floor(y / 100);
+  const b = 2 - a + Math.floor(a / 4);
+  const jd = Math.floor(365.25 * (y + 4716)) + Math.floor(30.6001 * (m + 1)) + day + b - 1524;
+
+  const z = jd - 1948084;
+  const cyc = Math.floor(z / 10631);
+  const rem = z - 10631 * cyc;
+  const j = Math.floor((rem - 8.01 / 60.0) / (10631.0 / 30.0));
+  const iy = 30 * cyc + j;
+  const remYear = rem - Math.floor(j * (10631.0 / 30.0) + 8.01 / 60.0);
+  let im = Math.floor((remYear + 28.5001) / 29.5);
+  if (im === 13) im = 12;
+  const id = remYear - Math.floor(29.5001 * im - 29);
+
+  const hijriMonthsBn = [
+    "মহররম", "সফর", "রবিউল আউয়াল", "রবিউস সানি",
+    "জমাদিউল আউয়াল", "জমাদিউস সানি", "রজব", "শাবান",
+    "রমজান", "শাওয়াল", "জিলকদ", "জিলহজ",
+  ];
+
+  const hijriMonthsEn = [
+    "Muharram", "Safar", "Rabi' al-Awwal", "Rabi' al-Thani",
+    "Jumada al-Awwal", "Jumada al-Thani", "Rajab", "Sha'ban",
+    "Ramadan", "Shawwal", "Dhu al-Qi'dah", "Dhu al-Hijjah",
+  ];
+
+  const hDay = Math.max(1, Math.min(30, Math.round(id)));
+  const hMonth = Math.max(1, Math.min(12, Math.round(im)));
+  const hYear = Math.round(iy);
+
+  const monthName = isBangla ? hijriMonthsBn[hMonth - 1] || "" : hijriMonthsEn[hMonth - 1] || "";
+  const fullText = isBangla
+    ? `${hDay} ${monthName} ${hYear} হিজরি`
+    : `${hDay} ${monthName} ${hYear} AH`;
+
+  return {
+    day: hDay,
+    month: hMonth,
+    year: hYear,
+    monthName,
+    fullText,
+  };
+}
+
+/** Check special Islamic event for a Hijri date or Friday */
+function getIslamicEvent(date: Date, hDay: number, hMonth: number, isBangla: boolean = true) {
+  const isFriday = date.getDay() === 5;
+
+  if (hMonth === 9 && hDay === 1) {
+    return {
+      title: isBangla ? "১ রমজান (রোজা শুরু)" : "1st Ramadan (Fasting Begins)",
+      badge: isBangla ? "রমজান" : "Ramadan",
+      color: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    };
+  }
+  if (hMonth === 9 && hDay === 17) {
+    return {
+      title: isBangla ? "ঐতিহাসিক বদর দিবস" : "Day of Badr",
+      badge: isBangla ? "বদর" : "Badr",
+      color: "text-blue-400 bg-blue-400/10 border-blue-400/30",
+    };
+  }
+  if (hMonth === 9 && hDay === 27) {
+    return {
+      title: isBangla ? "পবিত্র শবে কদর" : "Laylat al-Qadr",
+      badge: isBangla ? "কদর" : "Qadr",
+      color: "text-purple-400 bg-purple-400/10 border-purple-400/30",
+    };
+  }
+  if (hMonth === 10 && hDay === 1) {
+    return {
+      title: isBangla ? "পবিত্র ঈদুল ফিতর" : "Eid al-Fitr",
+      badge: isBangla ? "ঈদ" : "Eid",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+  if (hMonth === 12 && hDay === 9) {
+    return {
+      title: isBangla ? "আরাফাত দিবস ও হজ" : "Day of Arafah & Hajj",
+      badge: isBangla ? "হজ" : "Hajj",
+      color: "text-amber-400 bg-amber-400/10 border-amber-400/30",
+    };
+  }
+  if (hMonth === 12 && hDay === 10) {
+    return {
+      title: isBangla ? "পবিত্র ঈদুল আজহা (কোরবানি)" : "Eid al-Adha",
+      badge: isBangla ? "কোরবানি" : "Eid",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+  if (hMonth === 1 && hDay === 10) {
+    return {
+      title: isBangla ? "পবিত্র আশুরা" : "Holy Ashura",
+      badge: isBangla ? "আশুরা" : "Ashura",
+      color: "text-rose-400 bg-rose-400/10 border-rose-400/30",
+    };
+  }
+  if (hMonth === 3 && hDay === 12) {
+    return {
+      title: isBangla ? "ঈদে মিলাদুন্নবী (সা.)" : "Mawlid al-Nabi (PBUH)",
+      badge: isBangla ? "মিলাদ" : "Mawlid",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+  if (hMonth === 7 && hDay === 27) {
+    return {
+      title: isBangla ? "পবিত্র শবে মেরাজ" : "Shab-e-Miraj",
+      badge: isBangla ? "মেরাজ" : "Miraj",
+      color: "text-sky-400 bg-sky-400/10 border-sky-400/30",
+    };
+  }
+  if (hMonth === 8 && hDay === 15) {
+    return {
+      title: isBangla ? "পবিত্র শবে বরাত" : "Shab-e-Barat",
+      badge: isBangla ? "শবে বরাত" : "Barat",
+      color: "text-indigo-400 bg-indigo-400/10 border-indigo-400/30",
+    };
+  }
+  if (isFriday) {
+    return {
+      title: isBangla ? "পবিত্র জুমার দিন" : "Blessed Friday (Jumu'ah)",
+      badge: isBangla ? "জুমা" : "Jumu'ah",
+      color: "text-emerald-400 bg-emerald-400/10 border-emerald-400/30",
+    };
+  }
+
+  return null;
+}
+
+function Analytics() {
   const t = useT();
-  const {
-    profile,
-    items,
-    prayers,
-    goals,
-    todos,
-    markPrayer,
-    toggleItem,
-    setItemNotify,
-    toggleGoalSubTask,
-    toggleTodo,
-    appNotifications,
-    markNotificationRead,
-    markAllNotificationsRead,
-    clearNotifications,
-    timeFormat,
-    lang,
-  } = useApp();
-
-  const d = today();
+  const { prayers, items, goals, todos, hijriOffset, setHijriOffset, lang, timeFormat } = useApp();
   const isBn = lang === "bn";
-  const [showNotifPanel, setShowNotifPanel] = useState(false);
-  const [showTutorial, setShowTutorial] = useState(false);
-  const [showPermsModal, setShowPermsModal] = useState(false);
 
-  // Native Reels and SOT Tracker State
-  const [reelsStats, setReelsStats] = useState<NativeReelsStats>(() => getNativeReelsStats());
+  const todayStr = today();
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const [deviceStats, setDeviceStats] = useState<NativeReelsStats>(() => getNativeReelsStats());
+  const [usageView, setUsageView] = useState(0);
+  const [selectedUsageApp, setSelectedUsageApp] = useState<string | null>(null);
+  const [usageTouchStart, setUsageTouchStart] = useState<number | null>(null);
 
   useEffect(() => {
-    const updateStats = () => {
-      setReelsStats(getNativeReelsStats());
-    };
-    updateStats();
-    const interval = setInterval(updateStats, 2000);
-    window.addEventListener("focus", updateStats);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener("focus", updateStats);
-    };
+    let active = true;
+    const update = async () => { const stats = await refreshNativeReelsStats(); if (active) setDeviceStats(stats); };
+    void update();
+    const timer = window.setInterval(() => { void update(); }, 15000);
+    return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  const handleMockReel = () => {
-    triggerMockReel();
-    setTimeout(() => {
-      setReelsStats(getNativeReelsStats());
-    }, 100);
+  // Calendar View Month Navigation
+  const [viewDate, setViewDate] = useState<Date>(new Date());
+  const year = viewDate.getFullYear();
+  const month = viewDate.getMonth();
+
+  const prevMonth = () => setViewDate(new Date(year, month - 1, 1));
+  const nextMonth = () => setViewDate(new Date(year, month + 1, 1));
+  const jumpToday = () => {
+    setViewDate(new Date());
+    setSelectedDate(todayStr);
   };
 
-  // Daily Calculations
-  const habits = useMemo(() => (items || []).filter((i) => i.kind === "habit"), [items]);
-  const safePrayers = prayers || [];
-  const safeGoals = goals || [];
-  const safeTodos = todos || [];
-  const safeAppNotifications = (appNotifications || []).filter((n) => n && typeof n.title === "string" && n.title.trim() !== "");
+  // Streak Calculation
+  const streak = useMemo(() => {
+    const todayComplete = prayers.every((p) => (p.doneDates || []).includes(todayStr));
+    let st = todayComplete ? 1 : 0;
+    for (let i = 1; i <= 365; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dayKey = today(d);
+      if (prayers.every((p) => (p.doneDates || []).includes(dayKey))) {
+        st++;
+      } else {
+        break;
+      }
+    }
+    return st;
+  }, [prayers, todayStr]);
 
-  const prayedCount = safePrayers.filter((p) => (p?.doneDates || []).includes(d)).length;
-  const habitsCount = habits.filter((h) => (h?.doneDates || []).includes(d)).length;
+  // Overall rates for last 30 days
+  const stats30 = useMemo(() => {
+    let totalPrayersDone = 0;
+    let totalHabitsDone = 0;
+    for (let i = 0; i < 30; i++) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const dayKey = today(d);
+      totalPrayersDone += prayers.filter((p) => (p.doneDates || []).includes(dayKey)).length;
+      totalHabitsDone += items.filter((item) => (item.doneDates || []).includes(dayKey)).length;
+    }
+    const prayerRate = Math.round((totalPrayersDone / (30 * 5)) * 100);
+    const habitRate = items.length ? Math.round((totalHabitsDone / (30 * items.length)) * 100) : 0;
+    return { prayerRate, habitRate };
+  }, [prayers, items]);
 
-  // Subtasks across goals
-  const allGoalSubTasks = useMemo(() => {
-    return safeGoals.flatMap((g) => (g?.subTasks || []).map((st) => ({ ...st, goalId: g.id, goalTitle: g.title })));
-  }, [safeGoals]);
-  const goalSubTasksDoneCount = allGoalSubTasks.filter((st) => (st?.doneDates || []).includes(d)).length;
+  // Build calendar days for the current view month
+  const calendarDays = useMemo(() => {
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+    const startingDayOfWeek = firstDay.getDay(); // 0 is Sunday
 
-  const totalActionsToday = safePrayers.length + habits.length + allGoalSubTasks.length;
-  const doneActionsToday = prayedCount + habitsCount + goalSubTasksDoneCount;
-  const pct = totalActionsToday ? Math.round((doneActionsToday / totalActionsToday) * 100) : 0;
+    const days = [];
+    // Leading days from previous month
+    for (let i = 0; i < startingDayOfWeek; i++) {
+      const prevDate = new Date(year, month, -startingDayOfWeek + i + 1);
+      days.push({
+        dateObj: prevDate,
+        dateKey: today(prevDate),
+        isCurrentMonth: false,
+      });
+    }
 
-  const unreadNotifs = useMemo(
-    () => safeAppNotifications.filter((n) => !n.read).length,
-    [safeAppNotifications]
-  );
+    // Days in current month
+    for (let d = 1; d <= daysInMonth; d++) {
+      const dateObj = new Date(year, month, d);
+      days.push({
+        dateObj,
+        dateKey: today(dateObj),
+        isCurrentMonth: true,
+      });
+    }
+
+    // Trailing days to fill 35 or 42 grid cells
+    const remaining = (7 - (days.length % 7)) % 7;
+    for (let i = 1; i <= remaining; i++) {
+      const nextDate = new Date(year, month + 1, i);
+      days.push({
+        dateObj: nextDate,
+        dateKey: today(nextDate),
+        isCurrentMonth: false,
+      });
+    }
+
+    return days;
+  }, [year, month]);
+
+  // Selected Day Details
+  const selectedDateObj = useMemo(() => {
+    const [y, m, d] = selectedDate.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }, [selectedDate]);
+
+  const selectedHijri = useMemo(() => {
+    return getHijriInfo(selectedDateObj, hijriOffset, isBn);
+  }, [selectedDateObj, hijriOffset, isBn]);
+
+  const selectedEvent = useMemo(() => {
+    return getIslamicEvent(selectedDateObj, selectedHijri.day, selectedHijri.month, isBn);
+  }, [selectedDateObj, selectedHijri, isBn]);
+
+  const selectedPrayers = useMemo(() => {
+    return PRAYERS.map((k) => {
+      const pr = prayers.find((p) => p.key === k);
+      const isDone = pr ? pr.doneDates.includes(selectedDate) : false;
+      return {
+        key: k,
+        name: t(k as never),
+        time: pr?.time ? formatAppTime(pr.time, timeFormat) : "",
+        done: isDone,
+      };
+    });
+  }, [prayers, selectedDate, t, timeFormat]);
+
+  const selectedItems = useMemo(() => {
+    return items.map((i) => ({
+      ...i,
+      done: (i.doneDates || []).includes(selectedDate),
+    }));
+  }, [items, selectedDate]);
+
+  // Subtasks for selected day
+  const selectedGoalTasks = useMemo(() => {
+    const list: { goalTitle: string; subTaskTitle: string; done: boolean }[] = [];
+    goals.forEach((g) => {
+      (g.subTasks || []).forEach((st) => {
+        list.push({
+          goalTitle: g.title,
+          subTaskTitle: st.title,
+          done: (st.doneDates || []).includes(selectedDate),
+        });
+      });
+    });
+    return list;
+  }, [goals, selectedDate]);
+
+  // Todos for selected day
+  const selectedTodos = useMemo(() => {
+    return todos.filter((td) => !td.dueDate || td.dueDate === selectedDate);
+  }, [todos, selectedDate]);
+
+  const prayersDoneCount = selectedPrayers.filter((p) => p.done).length;
+  const itemsDoneCount = selectedItems.filter((i) => i.done).length;
+
+  // Upcoming 5 major Islamic events from today onwards
+  const upcomingEvents = useMemo(() => {
+    const eventsList = [];
+    const now = new Date();
+    for (let i = 0; i <= 365; i++) {
+      const d = new Date(now);
+      d.setDate(d.getDate() + i);
+      const h = getHijriInfo(d, hijriOffset, isBn);
+      const ev = getIslamicEvent(d, h.day, h.month, isBn);
+      // Exclude generic weekly Friday from major events list
+      if (ev && !ev.badge.includes("জুমা") && !ev.badge.includes("Jumu'ah")) {
+        eventsList.push({
+          dateStr: today(d),
+          dateObj: d,
+          title: ev.title,
+          badge: ev.badge,
+          hijriText: h.fullText,
+          daysLeft: i,
+        });
+        if (eventsList.length >= 6) break;
+      }
+    }
+    return eventsList;
+  }, [hijriOffset, isBn]);
+
+  const monthNamesBn = [
+    "জানুয়ারি", "ফেব্রুয়ারি", "মার্চ", "এপ্রিল", "মে", "জুন",
+    "জুলাই", "আগস্ট", "সেপ্টেম্বর", "অক্টোবর", "নভেম্বর", "ডিসেম্বর",
+  ];
+  const monthNamesEn = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const currentMonthName = isBn ? monthNamesBn[month] : monthNamesEn[month];
+
+  const weekdaysBn = ["রবি", "সোম", "মঙ্গল", "বুধ", "বৃহঃ", "শুক্র", "শনি"];
+  const weekdaysEn = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const currentWeekdays = isBn ? weekdaysBn : weekdaysEn;
 
   return (
-    <div className="flex flex-col gap-5">
-      {/* HEADER WITH NOTIFICATION BELL & TUTORIAL BUTTON */}
-      <header className="flex items-center justify-between">
-        <div>
-          <p className="text-xs text-muted-foreground">{t("hello")} 👋</p>
-          <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
-            {profile?.name || (lang === "bn" ? "প্রিয় মুসলিম ভাই/বোন" : "Welcome")}
-          </h1>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* TUTORIAL / DUMMY TEST BUTTON */}
-          <button
-            type="button"
-            onClick={() => setShowTutorial(true)}
-            className="flex items-center gap-1.5 rounded-2xl bg-secondary/80 hover:bg-secondary px-3 py-2 text-xs font-semibold text-foreground transition shadow-sm"
-            title={isBn ? "অ্যাপ টিউটোরিয়াল ও ডামি টেস্ট" : "Tutorial & Demo Test"}
-          >
-            <HelpCircle className="size-4 text-primary" />
-            <span className="hidden sm:inline">{isBn ? "টিউটোরিয়াল" : "Tutorial"}</span>
-          </button>
-
-          {/* NOTIFICATION BELL */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowNotifPanel(!showNotifPanel)}
-              className="relative grid size-10 place-items-center rounded-2xl bg-secondary/80 hover:bg-secondary text-foreground transition shadow-sm"
-              title={t("notifications")}
-            >
-              <Bell className="size-5" />
-              {unreadNotifs > 0 && (
-                <span className="absolute -top-1 -right-1 grid size-5 place-items-center rounded-full bg-destructive text-[10px] font-bold text-destructive-foreground animate-pulse shadow">
-                  {unreadNotifs > 9 ? "9+" : unreadNotifs}
-                </span>
-              )}
-            </button>
-
-            {/* NOTIFICATION POPOVER */}
-            {showNotifPanel && (
-              <>
-                <div 
-                  className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[2px]" 
-                  onClick={() => setShowNotifPanel(false)} 
-                />
-                <div className="absolute right-0 top-12 z-50 w-[calc(100vw-2.5rem)] max-w-sm rounded-2xl bg-card/95 backdrop-blur-2xl p-4 shadow-2xl border border-border/80 animate-in fade-in zoom-in-95">
-                  <div className="flex items-center justify-between border-b border-border/40 pb-2 mb-3">
-                    <div className="flex items-center gap-1.5">
-                      <Bell className="size-4 text-primary" />
-                      <h3 className="text-sm font-bold">{t("notifications")}</h3>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {unreadNotifs > 0 && (
-                        <button
-                          onClick={markAllNotificationsRead}
-                          className="text-[11px] text-primary hover:underline font-medium"
-                        >
-                          {lang === "bn" ? "সব পড়ুন" : "Mark all read"}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setShowNotifPanel(false)}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="size-4" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="no-scrollbar max-h-72 space-y-2 overflow-y-auto">
-                    {safeAppNotifications.length === 0 ? (
-                      <p className="py-6 text-center text-xs text-muted-foreground">
-                        {t("noNotifs")}
-                      </p>
-                    ) : (
-                      safeAppNotifications.map((notif) => (
-                        <div
-                          key={notif.id}
-                          onClick={() => markNotificationRead(notif.id)}
-                          className={cn(
-                            "rounded-xl p-2.5 transition cursor-pointer text-xs",
-                            notif.read ? "bg-muted/20 opacity-70" : "bg-primary/10 border border-primary/30"
-                          )}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-semibold text-foreground">{notif.title}</span>
-                            <span className="text-[10px] text-muted-foreground font-mono">{notif.createdAt}</span>
-                          </div>
-                          <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
-                            {notif.body}
-                          </p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-
-                  {safeAppNotifications.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-border/30 text-center">
-                      <button
-                        onClick={clearNotifications}
-                        className="text-[10px] text-muted-foreground hover:text-destructive transition"
-                      >
-                        {lang === "bn" ? "সকল নোটিফিকেশন মুছুন" : "Clear all notifications"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+    <div className="flex flex-col gap-6">
+      {/* HEADER & OVERALL STATS */}
+      <header>
+        <h1 className="text-3xl font-bold">{t("analytics")}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {isBn
+            ? "নামাজ, অভ্যাস, লক্ষ্য এবং হিজরি ক্যালেন্ডারের বিস্তারিত অ্যানালিটিক্স"
+            : "Prayers, habits, goals & Islamic Hijri calendar analytics"}
+        </p>
       </header>
 
-      {/* TODAY'S OVERALL PROGRESS CARD */}
-      <section className="glass flex items-center gap-5 p-5">
-        <div className="relative grid size-24 place-items-center shrink-0">
-          <svg viewBox="0 0 36 36" className="absolute inset-0 -rotate-90">
-            <circle cx="18" cy="18" r="15.5" fill="none" stroke="var(--border)" strokeWidth="3" />
-            <circle
-              cx="18"
-              cy="18"
-              r="15.5"
-              fill="none"
-              stroke="var(--primary)"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeDasharray={`${pct * 0.974} 100`}
-            />
-          </svg>
-          <span className="text-2xl font-black">{pct}%</span>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="glass flex flex-col items-center justify-center p-3 text-center">
+          <span className="text-2xl font-bold text-primary">{stats30.prayerRate}%</span>
+          <span className="mt-1 text-[11px] text-muted-foreground">{t("prayerRate")}</span>
         </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-muted-foreground font-medium">{t("todayProgress")}</p>
-          <div className="mt-1.5 flex flex-wrap gap-2 text-xs font-semibold">
-            <span className="rounded-lg bg-secondary px-2.5 py-1">
-              🕌 {prayedCount}/৫ {t("prayer")}
-            </span>
-            <span className="rounded-lg bg-secondary px-2.5 py-1">
-              ✨ {habitsCount}/{habits.length} {t("habits")}
-            </span>
-            {allGoalSubTasks.length > 0 && (
-              <span className="rounded-lg bg-secondary px-2.5 py-1">
-                🎯 {goalSubTasksDoneCount}/{allGoalSubTasks.length} {t("goals")}
-              </span>
-            )}
+        <div className="glass flex flex-col items-center justify-center p-3 text-center">
+          <span className="text-2xl font-bold text-success">{stats30.habitRate}%</span>
+          <span className="mt-1 text-[11px] text-muted-foreground">{t("habitRate")}</span>
+        </div>
+        <div className="glass flex flex-col items-center justify-center p-3 text-center">
+          <div className="flex items-center gap-1">
+            <Flame className="size-5 text-warning fill-warning" />
+            <span className="text-2xl font-bold text-warning">{streak}</span>
           </div>
-          {profile?.goal && (
-            <p className="mt-2 text-xs text-primary font-medium truncate">
-              🎯 {profile.goal}
-            </p>
-          )}
+          <span className="mt-1 text-[11px] text-muted-foreground">
+            {t("streak")} ({isBn ? "দিন" : "days"})
+          </span>
         </div>
-      </section>
+      </div>
 
-      {/* SMART REELS & DIGITAL DETOX CARD */}
-      <section className="glass relative overflow-hidden p-4">
-        {(!reelsStats.hasAccessibility || !reelsStats.hasOverlay) && (
-          <div className="mb-3 flex items-center justify-between gap-2 rounded-2xl bg-amber-500/15 border border-amber-500/40 p-3 shadow-sm animate-pulse">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="size-5 text-amber-500 shrink-0" />
-              <div>
-                <p className="text-xs font-bold text-foreground">
-                  {isBn ? "রিলস ও ভাসমান কাউন্টার চালু করতে অনুমতি প্রয়োজন" : "Permissions required for Reels Tracker"}
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  {isBn ? "সিস্টেম সেটিংসে গিয়ে পারমিশন অন করুন" : "Enable Accessibility & Overlay permissions"}
-                </p>
+      <section className="glass flex flex-col gap-3 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-bold">{isBn ? "আজকের ফোন ব্যবহার" : "Today’s phone usage"}</h2>
+            <p className="text-xs text-muted-foreground">{isBn ? "ডিভাইসের Usage Access অনুমতি প্রয়োজন" : "Requires Usage Access permission on your device"}</p>
+          </div>
+          <div className="text-right">
+            <p className="text-xl font-black text-primary">{Math.floor((deviceStats.sotMinutes || 0) / 60)}h {(deviceStats.sotMinutes || 0) % 60}m</p>
+            <span className="text-[10px] text-muted-foreground">SOT</span>
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-lg bg-secondary/40 px-3 py-2">
+          <span className="text-xs font-semibold">{isBn ? "রিলস দেখার সময়" : "Time spent on Reels"}</span>
+          <span className="text-xs font-bold">{Math.floor((deviceStats.reelsTimeMinutes || 0))}m {(deviceStats.reelsTimeSeconds || 0) % 60}s</span>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {([['instagram', 'Instagram'], ['facebook', 'Facebook'], ['youtube', 'YouTube'], ['tiktok', 'TikTok']] as const).map(([key, label]) => {
+            const count = deviceStats.platformReelCounts?.[key] ?? 0;
+            const seconds = deviceStats.platformReelTimeSeconds?.[key] ?? 0;
+            return <div key={key} className="rounded-lg bg-secondary/40 px-3 py-2"><div className="text-[11px] font-semibold">{label}</div><div className="mt-1 text-xs"><b>{count}</b> {isBn ? "রিলস" : "reels"} · {Math.floor(seconds / 60)}m {seconds % 60}s</div></div>;
+          })}
+        </div>
+        {(deviceStats.appUsage || []).length > 0 ? (
+          <>
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold">{isBn ? "অ্যাপ ব্যবহারের SOT" : "App usage SOT"}</h3>
+              <div className="flex items-center gap-1">
+                <button type="button" onClick={() => setUsageView((usageView + 2) % 3)} aria-label={isBn ? "আগের চার্ট" : "Previous chart"} className="rounded-full bg-secondary p-1.5"><SwipeLeft className="size-4" /></button>
+                <span className="min-w-12 text-center text-[10px] text-muted-foreground">{usageView + 1} / 3</span>
+                <button type="button" onClick={() => setUsageView((usageView + 1) % 3)} aria-label={isBn ? "পরের চার্ট" : "Next chart"} className="rounded-full bg-secondary p-1.5"><SwipeRight className="size-4" /></button>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => setShowPermsModal(true)}
-              className="rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-black shadow hover:bg-amber-400 active:scale-95 transition shrink-0"
+            <div
+              className="min-h-[210px] touch-pan-y"
+              onTouchStart={(event) => setUsageTouchStart(event.touches[0]?.clientX ?? null)}
+              onTouchEnd={(event) => {
+                if (usageTouchStart === null) return;
+                const touchX = event.changedTouches[0]?.clientX;
+                if (touchX === undefined) return;
+                const delta = touchX - usageTouchStart;
+                if (delta < -45) setUsageView((usageView + 1) % 3);
+                else if (delta > 45) setUsageView((usageView + 2) % 3);
+                setUsageTouchStart(null);
+              }}
             >
-              {isBn ? "অন করুন ↗" : "Enable ↗"}
-            </button>
-          </div>
+              {usageView === 0 ? (
+                <div className="relative h-[210px]">
+                  <ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={(deviceStats.appUsage || []).slice(0, 8)} dataKey="minutes" nameKey="appName" innerRadius={48} outerRadius={78} paddingAngle={2}>{(deviceStats.appUsage || []).slice(0, 8).map((app, index) => <Cell key={app.packageName} fill={["#8b5cf6", "#14b8a6", "#f97316", "#3b82f6", "#ec4899", "#eab308", "#22c55e", "#64748b"][index % 8]} />)}</Pie><Tooltip formatter={(value: number) => `${value}m`} /></PieChart></ResponsiveContainer>
+                  <div className="pointer-events-none absolute inset-0 grid place-items-center text-center"><span className="text-xs font-bold">{isBn ? "মোট SOT" : "Total SOT"}<br/>{Math.floor((deviceStats.sotMinutes || 0) / 60)}h {(deviceStats.sotMinutes || 0) % 60}m</span></div>
+                </div>
+              ) : usageView === 1 ? (
+                <div className="h-[210px] pt-3"><ResponsiveContainer width="100%" height="100%"><LineChart data={(deviceStats.appUsage || []).slice(0, 8).map((app) => ({ name: app.appName.slice(0, 10), minutes: app.minutes }))}><CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)"/><XAxis dataKey="name" tick={{ fontSize: 9 }} interval={0} angle={-25} textAnchor="end" height={48}/><YAxis tick={{ fontSize: 9 }} width={32}/><Tooltip formatter={(value: number) => `${value}m`}/><Line type="monotone" dataKey="minutes" stroke="var(--primary)" strokeWidth={3} dot={{ r: 3 }}/></LineChart></ResponsiveContainer></div>
+              ) : (
+                <div className="flex max-h-[210px] flex-col gap-1.5 overflow-y-auto pr-1">
+                  {(deviceStats.appUsage || []).map((app, index) => {
+                    const initials = app.appName.trim().split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
+                    return <button type="button" key={app.packageName} onClick={() => setSelectedUsageApp(selectedUsageApp === app.packageName ? null : app.packageName)} className="flex w-full items-center justify-between gap-3 rounded-lg bg-secondary/30 px-3 py-2 text-left">
+                      <span className="flex min-w-0 items-center gap-2"><span className="grid size-8 shrink-0 place-items-center rounded-xl text-[10px] font-black text-white" style={{ backgroundColor: ["#8b5cf6", "#14b8a6", "#f97316", "#3b82f6", "#ec4899"][index % 5] }}>{initials || "A"}</span><span className="min-w-0 truncate text-xs font-medium">{app.appName}</span></span>
+                      <span className="shrink-0 text-xs font-bold">{Math.floor(app.minutes / 60)}h {app.minutes % 60}m</span>
+                    </button>;
+                  })}
+                  {selectedUsageApp && (() => { const app = deviceStats.appUsage?.find((item) => item.packageName === selectedUsageApp); return app ? <div className="rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs"><b>{app.appName}</b><div className="mt-1 text-muted-foreground">{isBn ? "আজকের ব্যবহার" : "Today’s usage"}: {Math.floor(app.minutes / 60)}h {app.minutes % 60}m</div><div className="truncate text-[10px] text-muted-foreground">{app.packageName}</div></div> : null; })()}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-center gap-1.5">{[0, 1, 2].map((i) => <button key={i} aria-label={`Chart ${i + 1}`} onClick={() => setUsageView(i)} className={`size-1.5 rounded-full ${usageView === i ? "bg-primary" : "bg-muted-foreground/40"}`} />)}</div>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">{isBn ? "এখনও অ্যাপ ব্যবহারের তথ্য নেই। Usage Access চালু করুন, তারপর আবার দেখুন।" : "No app usage data yet. Enable Usage Access, then check again."}</p>
         )}
-        <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <div className="grid size-8 place-items-center rounded-xl bg-primary/20 text-primary">
-              <Smartphone className="size-4" />
-            </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <h2 className="text-sm font-bold text-foreground">
-                  {isBn ? "স্মার্ট রিলস ও ডিজিটাল ডিটক্স" : "Smart Reels & Digital Detox"}
-                </h2>
-                <span className="rounded bg-primary/20 px-1.5 py-0.5 text-[9px] font-bold text-primary">
-                  3s Dwell
-                </span>
-              </div>
-              <p className="text-[10px] text-muted-foreground">
-                {isBn ? "ইউটিউব শর্টস, ইনস্টাগ্রাম ও ফেসবুক রিলস" : "YouTube Shorts, Instagram & FB Reels"}
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={handleMockReel}
-            className="flex items-center gap-1 rounded-lg bg-secondary/80 hover:bg-secondary px-2.5 py-1 text-[11px] font-semibold text-foreground transition active:scale-95"
-            title={isBn ? "টেস্ট কাউন্ট যোগ করুন" : "Add test reel"}
-          >
-            <Play className="size-3 text-primary" />
-            <span>{isBn ? "রিলস টেস্ট (+১)" : "Test (+1)"}</span>
-          </button>
-        </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-          {/* REELS COUNT */}
-          <div className="rounded-xl border border-border/70 bg-secondary/40 p-3">
-            <span className="text-[10px] font-medium text-muted-foreground">
-              {isBn ? "আজকের রিলস সংখ্যা" : "Reels Watched Today"}
-            </span>
-            <div className="mt-1 flex items-baseline gap-1.5">
-              <span className="text-2xl font-black text-foreground font-mono">
-                {reelsStats.reelsToday}
-              </span>
-              <span className="text-xs text-muted-foreground">{isBn ? "টি" : "reels"}</span>
-            </div>
-            <p className="mt-1 text-[9px] text-muted-foreground">
-              {isBn ? "৩ সেকেন্ড বা তার বেশি সময় দেখলে কাউন্ট" : "Counts if viewed for 3s+"}
-            </p>
-          </div>
-
-          {/* FLOATING OVERLAY STATUS */}
-          <div className="rounded-xl border border-border/70 bg-secondary/40 p-3">
-            <span className="text-[10px] font-medium text-muted-foreground">
-              {isBn ? "স্ক্রিনে ভাসমান কাউন্টার" : "Floating Overlay Pill"}
-            </span>
-            <div className="mt-1 flex items-center gap-1.5">
-              <span className="text-xs font-bold text-foreground">
-                {reelsStats.hasOverlay ? (isBn ? "সক্রিয় ✓" : "Active ✓") : (isBn ? "অনুমতি দরকার" : "Permission Needed")}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={openNativeOverlaySettings}
-              className="mt-1 text-[10px] text-primary hover:underline"
-            >
-              {isBn ? "ওভারলে সেটিংস ↗" : "Overlay Settings ↗"}
-            </button>
-          </div>
-
-          {/* SCREEN ON TIME & ACCESSIBILITY */}
-          <div className="col-span-2 sm:col-span-1 rounded-xl border border-border/70 bg-secondary/40 p-3">
-            <span className="text-[10px] font-medium text-muted-foreground">
-              {isBn ? "অ্যাক্সেসিবিলিটি সার্ভিস" : "Accessibility Service"}
-            </span>
-            <div className="mt-1 flex items-center gap-1.5">
-              <span className="text-xs font-bold text-foreground">
-                {reelsStats.hasAccessibility ? (isBn ? "ট্র্যাকিং অন ✓" : "Tracking On ✓") : (isBn ? "চালু করুন" : "Enable Service")}
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={openNativeAccessibilitySettings}
-              className="mt-1 text-[10px] text-primary hover:underline"
-            >
-              {isBn ? "সার্ভিস সেটিংস ↗" : "Service Settings ↗"}
-            </button>
-          </div>
-        </div>
       </section>
 
-      {/* 1. 5 DAILY PRAYERS QUICK TRACKER */}
-      <section className="glass p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <span className="text-base">🕌</span>
-            <h2 className="font-bold text-sm">{t("prayer")}</h2>
+      {/* ISLAMIC CALENDAR SECTION */}
+      <section className="glass flex flex-col gap-4 p-4">
+        {/* CALENDAR CONTROLS & HEADER */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/30 pb-3">
+          <div className="flex items-center gap-2">
+            <CalendarIcon className="size-5 text-primary" />
+            <h2 className="text-lg font-bold">
+              {currentMonthName} {year}
+            </h2>
           </div>
-          <Link to="/prayer" className="text-xs text-primary hover:underline flex items-center gap-0.5">
-            {lang === "bn" ? "বিস্তারিত" : "Details"} <ChevronRight className="size-3" />
-          </Link>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={jumpToday}
+              className="rounded-xl bg-secondary px-2.5 py-1 text-xs font-semibold hover:bg-muted transition"
+            >
+              {isBn ? "আজ" : "Today"}
+            </button>
+            <button
+              onClick={prevMonth}
+              className="rounded-xl bg-muted p-1.5 hover:bg-muted/80 transition"
+              title={isBn ? "পূর্ববর্তী মাস" : "Previous Month"}
+            >
+              <ChevronLeft className="size-4" />
+            </button>
+            <button
+              onClick={nextMonth}
+              className="rounded-xl bg-muted p-1.5 hover:bg-muted/80 transition"
+              title={isBn ? "পরবর্তী মাস" : "Next Month"}
+            >
+              <ChevronRight className="size-4" />
+            </button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-5 gap-1.5 sm:gap-2">
-          {safePrayers.map((p) => {
-            const ok = (p?.doneDates || []).includes(d);
-            return (
+        {/* LUNAR OFFSET / MOON SIGHTING ADJUSTMENT */}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-muted/30 px-3 py-2 text-xs">
+          <div className="flex items-center gap-1.5 text-muted-foreground">
+            <SlidersHorizontal className="size-3.5 text-primary" />
+            <span>{isBn ? "চাঁদ দেখার তারিখ সমন্বয় (Moon offset):" : "Moon sighting adjustment:"}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {[-1, 0, 1].map((off) => (
               <button
-                key={p.key}
-                type="button"
-                onClick={() => markPrayer(p.key)}
+                key={off}
+                onClick={() => setHijriOffset(off)}
                 className={cn(
-                  "flex flex-col items-center gap-1 rounded-xl py-3 px-1 text-xs transition select-none",
-                  ok
-                    ? "bg-primary text-primary-foreground font-bold shadow-lg shadow-primary/25 ring-1 ring-primary/40"
-                    : "bg-secondary/70 hover:bg-secondary text-foreground"
+                  "rounded-lg px-2.5 py-1 font-semibold transition",
+                  hijriOffset === off ? "bg-primary text-primary-foreground shadow" : "bg-muted text-muted-foreground hover:text-foreground"
                 )}
               >
-                {ok ? <Check className="size-4 stroke-[3]" /> : <span className="size-4 opacity-40">○</span>}
-                <span className="truncate">{t(p.key)}</span>
-                <span className="text-[10px] opacity-85 font-mono">
-                  {formatAppTime(p.time, timeFormat, lang)}
-                </span>
+                {off === 0 ? (isBn ? "০ (স্বাভাবিক)" : "0 (Default)") : off > 0 ? `+${off} ${isBn ? "দিন" : "day"}` : `${off} ${isBn ? "দিন" : "day"}`}
               </button>
+            ))}
+          </div>
+        </div>
+
+        {/* WEEKDAYS HEADER */}
+        <div className="grid grid-cols-7 text-center text-xs font-semibold text-muted-foreground">
+          {currentWeekdays.map((w, idx) => (
+            <span key={w} className={idx === 5 ? "text-emerald-400 font-bold" : ""}>
+              {w}
+            </span>
+          ))}
+        </div>
+
+        {/* CALENDAR DAYS GRID */}
+        <div className="grid grid-cols-7 gap-1">
+          {calendarDays.map((cell, idx) => {
+            const h = getHijriInfo(cell.dateObj, hijriOffset, isBn);
+            const ev = getIslamicEvent(cell.dateObj, h.day, h.month, isBn);
+
+            const prayersDone = prayers.filter((p) => (p.doneDates || []).includes(cell.dateKey)).length;
+            const isToday = cell.dateKey === todayStr;
+            const isSelected = cell.dateKey === selectedDate;
+            const isPastOrToday = cell.dateKey <= todayStr;
+
+            return (
+              <div
+                key={idx}
+                onClick={() => setSelectedDate(cell.dateKey)}
+                className={cn(
+                  "group relative flex min-h-[4.2rem] flex-col items-center justify-between rounded-xl p-1 cursor-pointer transition select-none",
+                  cell.isCurrentMonth ? "bg-card/40 hover:bg-card/80" : "opacity-30 hover:opacity-70",
+                  isToday && "ring-1 ring-primary/80",
+                  isSelected && "glow-on ring-2 ring-primary"
+                )}
+              >
+                {/* Date numbers (Gregorian & Hijri) */}
+                <div className="flex w-full items-center justify-between px-1">
+                  <span className={cn("text-xs font-bold", isToday ? "text-primary font-extrabold" : "text-foreground")}>
+                    {cell.dateObj.getDate()}
+                  </span>
+                  <span className="text-[9px] font-mono text-muted-foreground/80">
+                    {h.day}
+                  </span>
+                </div>
+
+                {/* Event badge if present */}
+                {ev && (
+                  <span className={cn("rounded px-1 py-0.2 text-[8px] font-bold border truncate max-w-full leading-tight", ev.color)}>
+                    {ev.badge}
+                  </span>
+                )}
+
+                {/* Prayer dots / count indicator */}
+                {isPastOrToday ? (
+                  <div className="mt-1 flex items-center justify-center gap-0.5">
+                    {prayersDone === 5 ? (
+                      <span className="rounded bg-success/20 px-1 py-0.2 text-[9px] font-bold text-success">
+                        {isBn ? "৫/৫" : "5/5"}
+                      </span>
+                    ) : prayersDone > 0 ? (
+                      <span className="rounded bg-warning/20 px-1 py-0.2 text-[9px] font-semibold text-warning">
+                        {isBn ? `${prayersDone}/৫` : `${prayersDone}/5`}
+                      </span>
+                    ) : (
+                      <span className="rounded bg-destructive/15 px-1 py-0.2 text-[9px] font-semibold text-destructive/80">
+                        {isBn ? "০/৫" : "0/5"}
+                      </span>
+                    )}
+                  </div>
+                ) : (
+                  <span className="text-[10px] text-muted-foreground/30">•</span>
+                )}
+              </div>
             );
           })}
         </div>
       </section>
 
-      {/* 2. GOALS & LINKED DAILY TASKS */}
-      <section className="glass p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <Target className="size-4 text-primary" />
-            <h2 className="font-bold text-sm">{t("goals")} ({goals.length})</h2>
+      {/* SELECTED DAY DETAILED BREAKDOWN MODAL / PANEL */}
+      <section className="glass flex flex-col gap-4 p-5 animate-in fade-in">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border/30 pb-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Clock className="size-4 text-primary" />
+              <h3 className="text-base font-bold text-foreground">
+                {selectedDateObj.toLocaleDateString(isBn ? "bn-BD" : "en-US", {
+                  weekday: "long",
+                  year: "numeric",
+                  month: "long",
+                  day: "numeric",
+                })}
+              </h3>
+            </div>
+            <p className="mt-0.5 text-xs text-primary font-medium">
+              🌙 {selectedHijri.fullText}
+            </p>
           </div>
-          <Link to="/plan" className="text-xs text-primary hover:underline flex items-center gap-0.5">
-            + {t("add")} <ChevronRight className="size-3" />
-          </Link>
+
+          {selectedEvent && (
+            <span className={cn("inline-flex items-center gap-1 rounded-xl border px-3 py-1 text-xs font-semibold", selectedEvent.color)}>
+              <Sparkles className="size-3" />
+              {selectedEvent.title}
+            </span>
+          )}
         </div>
 
-        {goals.length === 0 ? (
-          <p className="py-2 text-xs text-muted-foreground">
-            {lang === "bn" ? "কোনো লক্ষ্য যুক্ত করা হয়নি।" : "No goals created yet."}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {goals.map((g) => {
-              const subTasksTodayDone = g.subTasks.filter((st) => st.doneDates.includes(d)).length;
-              return (
-                <div key={g.id} className="rounded-xl border border-primary/20 bg-secondary/30 p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="font-bold text-xs text-foreground">{g.title}</h3>
-                      {g.deadline && (
-                        <span className="text-[10px] text-muted-foreground">
-                          {lang === "bn" ? `টার্গেট: ${g.deadline}` : `Target: ${g.deadline}`}
-                        </span>
-                      )}
-                    </div>
-                    <span className="text-[11px] font-semibold text-primary">
-                      {subTasksTodayDone}/{g.subTasks.length} {lang === "bn" ? "আজকের টাস্ক" : "tasks today"}
-                    </span>
-                  </div>
-
-                  {/* Daily action tasks under this goal */}
-                  <div className="mt-2.5 flex flex-col gap-1.5">
-                    {g.subTasks.map((st) => {
-                      const isDone = (st?.doneDates || []).includes(d);
-                      return (
-                        <div
-                          key={st.id}
-                          onClick={() => toggleGoalSubTask(g.id, st.id)}
-                          className={cn(
-                            "flex items-center gap-2.5 rounded-lg p-2.5 text-xs transition cursor-pointer border",
-                            isDone
-                              ? "bg-primary/10 border-primary/30 text-foreground"
-                              : "bg-card/40 hover:bg-card border-transparent"
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              "grid size-5 shrink-0 place-items-center rounded-full border transition",
-                              isDone
-                                ? "border-primary bg-primary text-primary-foreground"
-                                : "border-muted-foreground/60"
-                            )}
-                          >
-                            {isDone && <Check className="size-3.5 stroke-[3]" />}
-                          </div>
-                          <span className={cn("truncate flex-1 text-xs font-semibold text-foreground")}>
-                            {st.title}
-                          </span>
-                          {isDone ? (
-                            <span className="inline-flex items-center gap-0.5 rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-bold text-emerald-400">
-                              ✓ {isBn ? "সম্পন্ন" : "Done"}
-                            </span>
-                          ) : st.time ? (
-                            <span className="text-[10px] text-muted-foreground font-mono">
-                              {formatAppTime(st.time, timeFormat, lang)}
-                            </span>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
+        {/* 5 PRAYERS STATUS */}
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            {isBn
+              ? `নামাজের হিসাব (${prayersDoneCount}/৫ ওয়াক্ত আদায়)`
+              : `Prayers Record (${prayersDoneCount}/5 Prayers Completed)`}
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
+            {selectedPrayers.map((p) => (
+              <div
+                key={p.key}
+                className={cn(
+                  "flex items-center justify-between rounded-xl border p-2.5 transition",
+                  p.done
+                    ? "border-success/40 bg-success/10 text-success"
+                    : "border-border/40 bg-muted/30 text-muted-foreground"
+                )}
+              >
+                <div>
+                  <p className="text-xs font-bold text-foreground">{p.name}</p>
+                  <p className="text-[10px] text-muted-foreground">{p.time}</p>
                 </div>
-              );
-            })}
+                {p.done ? (
+                  <CheckCircle2 className="size-4 text-success" />
+                ) : (
+                  <XCircle className="size-4 text-muted-foreground" />
+                )}
+              </div>
+            ))}
           </div>
-        )}
-      </section>
-
-      {/* 3. DAILY HABITS */}
-      <section className="glass p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <Sparkles className="size-4 text-primary" />
-            <h2 className="font-bold text-sm">{t("habits")} ({habits.length})</h2>
-          </div>
-          <Link to="/plan" className="text-xs text-primary hover:underline flex items-center gap-0.5">
-            + {t("add")} <ChevronRight className="size-3" />
-          </Link>
         </div>
 
-        {habits.length === 0 ? (
-          <p className="py-2 text-xs text-muted-foreground">{t("empty")}</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {habits.map((i) => {
-              const ok = i.doneDates.includes(d);
-              return (
-                <li
-                  key={i.id}
-                  className={cn(
-                    "flex items-center gap-3 rounded-xl p-2.5 border transition",
-                    ok
-                      ? "bg-primary/10 border-primary/30 text-foreground"
-                      : "bg-secondary/50 border-transparent text-foreground"
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggleItem(i.id)}
-                    className={cn(
-                      "grid size-6 shrink-0 place-items-center rounded-full border transition",
-                      ok
-                        ? "border-transparent bg-primary text-primary-foreground shadow-sm shadow-primary/30"
-                        : "border-border/80"
-                    )}
-                  >
-                    {ok && <Check className="size-3.5 stroke-[3]" />}
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <p className={cn("text-xs truncate font-semibold text-foreground")}>
-                      {i.title}
-                    </p>
-                    {i.time && (
-                      <p className="text-[10px] text-muted-foreground font-mono">
-                        {formatAppTime(i.time, timeFormat, lang)}
-                      </p>
-                    )}
-                  </div>
-                  {ok && (
-                    <span className="inline-flex items-center gap-0.5 rounded-md bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-bold text-emerald-400">
-                      ✓ {isBn ? "সম্পন্ন" : "Done"}
-                    </span>
-                  )}
-                  <NotifyToggle
-                    mode={i.notify}
-                    hasTime={!!i.time.trim()}
-                    onChange={(m) => {
-                      setItemNotify(i.id, m);
-                      if (m !== "off") requestPermission();
-                    }}
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      {/* 4. TODAY'S TO-DO LIST (ONE-TIME TASKS) */}
-      <section className="glass p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="flex items-center gap-1.5">
-            <ListTodo className="size-4 text-primary" />
-            <h2 className="font-bold text-sm">{t("todoList")}</h2>
-          </div>
-          <Link to="/plan" className="text-xs text-primary hover:underline flex items-center gap-0.5">
-            + {t("add")} <ChevronRight className="size-3" />
-          </Link>
-        </div>
-
-        {safeTodos.filter((td) => !td.completed).length === 0 ? (
-          <p className="py-2 text-xs text-muted-foreground">
-            {lang === "bn" ? "কোনো পেন্ডিং টু-ডু নেই।" : "No pending to-do items."}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {safeTodos
-              .filter((td) => !td.completed)
-              .map((td) => (
+        {/* HABITS STATUS */}
+        <div>
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+            {isBn
+              ? `দৈনিক অভ্যাস (${itemsDoneCount}/${selectedItems.length} সম্পন্ন)`
+              : `Daily Habits (${itemsDoneCount}/${selectedItems.length} Completed)`}
+          </h4>
+          {selectedItems.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              {isBn ? "কোনো অভ্যাস যুক্ত করা নেই।" : "No habits added."}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {selectedItems.map((item) => (
                 <div
-                  key={td.id}
-                  onClick={() => toggleTodo(td.id)}
-                  className="flex items-center gap-3 rounded-xl bg-secondary/50 p-2.5 transition cursor-pointer hover:bg-secondary/70 border border-transparent"
+                  key={item.id}
+                  className={cn(
+                    "flex items-center justify-between rounded-xl border p-2.5 text-xs transition",
+                    item.done
+                      ? "border-success/40 bg-success/10 text-success font-medium"
+                      : "border-border/40 bg-muted/30 text-muted-foreground"
+                  )}
                 >
-                  <div className="grid size-6 shrink-0 place-items-center rounded-full border border-muted-foreground/60">
-                    {td.completed && <Check className="size-3.5" />}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold truncate text-foreground">{td.title}</p>
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground mt-0.5">
-                      {td.dueDate && <span>📅 {td.dueDate}</span>}
-                      {td.time && <span>⏰ {formatAppTime(td.time, timeFormat, lang)}</span>}
-                    </div>
-                  </div>
+                  <span className="truncate pr-2">{item.title}</span>
+                  {item.done ? (
+                    <span className="flex items-center gap-1 text-[10px] text-success font-semibold shrink-0">
+                      <CheckCircle2 className="size-3.5" /> {isBn ? "সম্পন্ন" : "Done"}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{isBn ? "বাকি ছিল" : "Missed"}</span>
+                  )}
                 </div>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* GOAL SUBTASKS STATUS */}
+        {selectedGoalTasks.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <Target className="size-3.5 text-primary" />
+              {isBn ? "লক্ষ্যের দৈনিক টাস্ক (Goal Subtasks)" : "Goal Subtasks"}
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {selectedGoalTasks.map((st, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    "flex items-center justify-between rounded-xl border p-2.5 text-xs transition",
+                    st.done
+                      ? "border-success/40 bg-success/10 text-success font-medium"
+                      : "border-border/40 bg-muted/30 text-muted-foreground"
+                  )}
+                >
+                  <div>
+                    <p className="font-semibold">{st.subTaskTitle}</p>
+                    <p className="text-[10px] text-muted-foreground">🎯 {st.goalTitle}</p>
+                  </div>
+                  {st.done ? (
+                    <span className="flex items-center gap-1 text-[10px] text-success font-semibold shrink-0">
+                      <CheckCircle2 className="size-3.5" /> {isBn ? "সম্পন্ন" : "Done"}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{isBn ? "বাকি" : "Pending"}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ONE-OFF TO-DOS */}
+        {selectedTodos.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 flex items-center gap-1.5">
+              <ListTodo className="size-3.5 text-primary" />
+              {isBn ? "টু-ডু লিস্ট (To-Do List)" : "To-Do List"}
+            </h4>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {selectedTodos.map((td) => (
+                <div
+                  key={td.id}
+                  className={cn(
+                    "flex items-center justify-between rounded-xl border p-2.5 text-xs transition",
+                    td.completed
+                      ? "border-success/40 bg-success/10 text-success font-medium"
+                      : "border-border/40 bg-muted/30 text-muted-foreground"
+                  )}
+                >
+                  <span className="truncate pr-2">{td.title}</span>
+                  {td.completed ? (
+                    <span className="flex items-center gap-1 text-[10px] text-success font-semibold shrink-0">
+                      <CheckCircle2 className="size-3.5" /> {isBn ? "সম্পন্ন" : "Done"}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground shrink-0">{isBn ? "বাকি" : "Pending"}</span>
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </section>
 
-      {/* INTERACTIVE ONBOARDING / TUTORIAL MODAL */}
-      <SmartPermissionsModal forceOpen={showPermsModal} onClose={() => setShowPermsModal(false)} />
+      {/* UPCOMING ISLAMIC EVENTS (LIKE GOOGLE CALENDAR) */}
+      <section className="glass flex flex-col gap-3 p-5">
+        <h3 className="text-base font-bold flex items-center gap-2">
+          <span>🕌</span>
+          {isBn ? "আসন্ন গুরুত্বপূর্ণ ইসলামিক দিন ও পর্বসমূহ" : "Upcoming Major Islamic Events"}
+        </h3>
+        <p className="text-xs text-muted-foreground">
+          {isBn
+            ? "চাঁদ দেখার সমন্বয় অনুযায়ী স্বয়ংক্রিয়ভাবে তারিখ আপডেট হয়:"
+            : "Dates automatically recalculate based on moon sighting offset:"}
+        </p>
 
-      {showTutorial && (
-        <InteractiveOnboarding
-          onComplete={() => setShowTutorial(false)}
-          isInitial={false}
-        />
-      )}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-1">
+          {upcomingEvents.map((ev, i) => (
+            <div
+              key={i}
+              className="flex items-center justify-between rounded-xl border border-border/40 bg-card/30 p-3 hover:bg-card/60 transition"
+            >
+              <div>
+                <p className="text-xs font-bold text-foreground">{ev.title}</p>
+                <p className="text-[10px] text-primary mt-0.5">{ev.hijriText}</p>
+                <p className="text-[10px] text-muted-foreground">{ev.dateStr}</p>
+              </div>
+              <div className="text-right shrink-0">
+                <span className="rounded-full bg-primary/10 px-2.5 py-1 text-xs font-bold text-primary">
+                  {ev.daysLeft === 0 ? (isBn ? "আজ" : "Today") : `${ev.daysLeft} ${isBn ? "দিন বাকি" : "days left"}`}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

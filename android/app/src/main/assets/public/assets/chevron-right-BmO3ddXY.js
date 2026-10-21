@@ -1,1 +1,1 @@
-import{Z as e}from"./index-DBQ7FHr7.js";var t=e(`chevron-right`,[[`path`,{d:`m9 18 6-6-6-6`,key:`mthhwq`}]]);export{t};
+import{Z as e}from"./index-DaRTLkRE.js";var t=e(`chevron-right`,[[`path`,{d:`m9 18 6-6-6-6`,key:`mthhwq`}]]);export{t};

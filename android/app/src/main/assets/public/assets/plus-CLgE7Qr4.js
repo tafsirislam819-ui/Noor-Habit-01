@@ -1,1 +1,1 @@
-import{u as e}from"./utils-ByrCX67n.js";var t=e(`plus`,[[`path`,{d:`M5 12h14`,key:`1ays0h`}],[`path`,{d:`M12 5v14`,key:`s699le`}]]);export{t};
+import{Z as e}from"./index-DV4Re1Bn.js";var t=e(`plus`,[[`path`,{d:`M5 12h14`,key:`1ays0h`}],[`path`,{d:`M12 5v14`,key:`s699le`}]]);export{t};

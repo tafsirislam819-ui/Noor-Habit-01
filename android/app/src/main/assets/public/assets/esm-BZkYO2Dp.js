@@ -1,2 +1,2 @@
-const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/web-acrH8RuM.js","assets/index-DY7Hf5Tq.js"])))=>i.map(i=>d[i]);
-import{T as e,p as t}from"./index-DY7Hf5Tq.js";var n=e(`Browser`,{web:()=>t(()=>import(`./web-acrH8RuM.js`).then(e=>new e.BrowserWeb),__vite__mapDeps([0,1]))});export{n as Browser};
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/web-DoTUuo9D.js","assets/index-BJ7XzOPs.js"])))=>i.map(i=>d[i]);
+import{T as e,p as t}from"./index-BJ7XzOPs.js";var n;(function(e){e[e.Sunday=1]=`Sunday`,e[e.Monday=2]=`Monday`,e[e.Tuesday=3]=`Tuesday`,e[e.Wednesday=4]=`Wednesday`,e[e.Thursday=5]=`Thursday`,e[e.Friday=6]=`Friday`,e[e.Saturday=7]=`Saturday`})(n||={});var r=e(`LocalNotifications`,{web:()=>t(()=>import(`./web-DoTUuo9D.js`).then(e=>new e.LocalNotificationsWeb),__vite__mapDeps([0,1]))});export{r as LocalNotifications};

@@ -1,22 +1,17 @@
-{
-  "$schema": "https://ui.shadcn.com/schema.json",
-  "style": "new-york",
-  "rsc": false,
-  "tsx": true,
-  "tailwind": {
-    "css": "src/styles.css",
-    "baseColor": "slate",
-    "cssVariables": true,
-    "prefix": ""
+import type { CapacitorConfig } from "@capacitor/cli";
+
+const config: CapacitorConfig = {
+  appId: "com.noorhabit.app",
+  appName: "Noor Habit",
+  webDir: "dist/client",
+  plugins: {
+    LocalNotifications: { smallIcon: "ic_stat_icon_config_sample", iconColor: "#7c6cf0" },
+    StatusBar: {
+      overlaysWebView: true,
+      style: "DARK",
+      backgroundColor: "#00000000",
+    },
   },
-  "iconLibrary": "lucide",
-  "rtl": false,
-  "aliases": {
-    "components": "@/components",
-    "utils": "@/lib/utils",
-    "ui": "@/components/ui",
-    "lib": "@/lib",
-    "hooks": "@/hooks"
-  },
-  "registries": {}
-}
+};
+
+export default config;

@@ -1,88 +1,30 @@
-import { useApp } from "./store";
-
-const dict = {
-  appName: { bn: "নূর হ্যাবিট", en: "Noor Habit" },
-  home: { bn: "হোম", en: "Home" },
-  plan: { bn: "প্ল্যান", en: "Plan" },
-  prayer: { bn: "নামাজ", en: "Prayer" },
-  analytics: { bn: "অ্যানালিটিক্স", en: "Analytics" },
-  ai: { bn: "Noor AI", en: "Noor AI" },
-  friends: { bn: "ফ্রেন্ডস", en: "Friends" },
-  settings: { bn: "সেটিংস", en: "Settings" },
-  hello: { bn: "আসসালামু আলাইকুম", en: "Assalamu alaikum" },
-  todayProgress: { bn: "আজকের অগ্রগতি", en: "Today's progress" },
-  habits: { bn: "অভ্যাস", en: "Habits" },
-  goals: { bn: "লক্ষ্য (Goals)", en: "Goals" },
-  tasks: { bn: "টু-ডু লিস্ট", en: "To-Do List" },
-  todoList: { bn: "টু-ডু লিস্ট", en: "To-Do List" },
-  add: { bn: "যোগ করুন", en: "Add" },
-  title: { bn: "শিরোনাম লিখুন", en: "Title" },
-  time: { bn: "সময়", en: "Time" },
-  empty: { bn: "এখনো কিছু যুক্ত করা হয়নি", en: "Nothing added yet" },
-  normal: { bn: "রিমাইন্ডার", en: "Reminder" },
-  aggressive: { bn: "অ্যালার্ম", en: "Aggressive Alarm" },
-  off: { bn: "বন্ধ", en: "Off" },
-  fajr: { bn: "ফজর", en: "Fajr" },
-  dhuhr: { bn: "যোহর", en: "Dhuhr" },
-  asr: { bn: "আসর", en: "Asr" },
-  maghrib: { bn: "মাগরিব", en: "Maghrib" },
-  isha: { bn: "এশা", en: "Isha" },
-  prayed: { bn: "পড়েছি", en: "Prayed" },
-  iPrayed: { bn: "আমি নামাজ পড়েছি", en: "I have prayed" },
-  timeFor: { bn: "নামাজের সময় হয়েছে", en: "Time for" },
-  notifSettings: { bn: "নোটিফিকেশন", en: "Notifications" },
-  prayerNotif: { bn: "নামাজের সময় ও নোটিফিকেশন", en: "Prayer Times & Notifications" },
-  itemNotif: { bn: "অভ্যাস ও টাস্ক রিমাইন্ডার", en: "Habit & Task Reminders" },
-  normalDesc: { bn: "নির্ধারিত সময়ে একবার নোটিফিকেশন আসবে", en: "Notifies once at the set time" },
-  aggrDesc: { bn: "নিশ্চিত না করা পর্যন্ত অ্যালার্ম রিং করবে", en: "Rings insistent alert until you confirm" },
-  theme: { bn: "থিম কালার", en: "Theme Color" },
-  language: { bn: "ভাষা (Language)", en: "Language" },
-  timeFormat: { bn: "সময় প্রদর্শনের ফরম্যাট", en: "Time Display Format" },
-  toneSettings: { bn: "নোটিফিকেশন ও অ্যালার্ম টোন", en: "Notification & Alarm Tones" },
-  remindTone: { bn: "রিমাইন্ডার টোন", en: "Reminder Tone" },
-  aggressiveTone: { bn: "অ্যাগ্রেসিভ অ্যালার্ম টোন", en: "Aggressive Alarm Tone" },
-  profile: { bn: "প্রোফাইল", en: "Profile" },
-  name: { bn: "আপনার নাম", en: "Your Name" },
-  birth: { bn: "জন্ম তারিখ", en: "Birth Date" },
-  mainGoal: { bn: "আপনার প্রধান লক্ষ্য (ঐচ্ছিক)", en: "Your Main Goal (Optional)" },
-  start: { bn: "শুরু করুন", en: "Get Started" },
-  welcome: { bn: "স্বাগতম! শুরু করার আগে আপনার নাম দিন", en: "Welcome! Tell us your name to begin" },
-  save: { bn: "সংরক্ষণ করুন", en: "Save" },
-  offlineAi: { bn: "ইন্টারনেট সংযোগ নেই — এআই সাময়িক বন্ধ", en: "Offline — AI is temporarily unavailable" },
-  send: { bn: "পাঠান", en: "Send" },
-  checkUpdate: { bn: "আপডেট চেক করুন", en: "Check for Updates" },
-  upToDate: { bn: "আপনি সর্বশেষ ভার্সনে আছেন", en: "You're on the latest version" },
-  updateAvail: { bn: "নতুন ভার্সন পাওয়া গেছে", en: "New version available" },
-  download: { bn: "ডাউনলোড ও আপডেট", en: "Download & Update" },
-  streak: { bn: "ধারাবাহিকতা", en: "Day Streak" },
-  days: { bn: "দিন", en: "days" },
-  prayerRate: { bn: "নামাজ (৩০ দিন)", en: "Prayers (30 Days)" },
-  habitRate: { bn: "অভ্যাস (৩০ দিন)", en: "Habits (30 Days)" },
-  leaderboard: { bn: "লিডারবোর্ড", en: "Leaderboard" },
-  myFriends: { bn: "বন্ধুদের তালিকা", en: "My Friends" },
-  addFriend: { bn: "ফ্রেন্ড রিকোয়েস্ট", en: "Friend Requests" },
-  friendCode: { bn: "আপনার ফ্রেন্ড কোড", en: "Your Unique Friend Code" },
-  enterFriendCode: { bn: "বন্ধুর ৬ ডিজিটের কোড দিন", en: "Enter friend's 6-digit code" },
-  copyCode: { bn: "কোড কপি", en: "Copy Code" },
-  copied: { bn: "কপি হয়েছে!", en: "Copied!" },
-  sendRequest: { bn: "রিকোয়েস্ট পাঠান", en: "Send Request" },
-  login: { bn: "লগইন", en: "Login" },
-  signup: { bn: "রেজিস্ট্রেশন", en: "Sign Up" },
-  email: { bn: "ইমেইল", en: "Email" },
-  password: { bn: "পাসওয়ার্ড", en: "Password" },
-  logout: { bn: "লগআউট", en: "Log out" },
-  authNote: {
-    bn: "লগইন করলে আপনার ডাটা ক্লাউডে সুরক্ষিত থাকবে এবং বন্ধুদের সাথে প্রতিযোগিতা করতে পারবেন।",
-    en: "Sign in to securely backup your data and connect with friends.",
-  },
-  refresh: { bn: "রিফ্রেশ", en: "Refresh" },
-  notifications: { bn: "নোটিফিকেশনসমূহ", en: "Notifications" },
-  markAllRead: { bn: "সব পঠিত হিসেবে চিহ্নিত করুন", en: "Mark all as read" },
-  noNotifs: { bn: "নতুন কোনো নোটিফিকেশন নেই", en: "No new notifications" },
-} as const;
-
-export type Key = keyof typeof dict;
-export function useT() {
-  const lang = useApp((s) => s.lang);
-  return (k: Key) => dict[k]?.[lang] ?? k;
+export function renderErrorPage(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>This page didn't load</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font: 15px/1.5 system-ui, -apple-system, sans-serif; background: #fafafa; color: #111; display: grid; place-items: center; min-height: 100vh; margin: 0; padding: 1.5rem; }
+      .card { max-width: 28rem; width: 100%; text-align: center; padding: 2rem; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.5rem; }
+      p { color: #4b5563; margin: 0 0 1.5rem; }
+      .actions { display: flex; gap: 0.5rem; justify-content: center; flex-wrap: wrap; }
+      a, button { padding: 0.5rem 1rem; border-radius: 0.375rem; font: inherit; cursor: pointer; text-decoration: none; border: 1px solid transparent; }
+      .primary { background: #111; color: #fff; }
+      .secondary { background: #fff; color: #111; border-color: #d1d5db; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>This page didn't load</h1>
+      <p>Something went wrong on our end. You can try refreshing or head back home.</p>
+      <div class="actions">
+        <button class="primary" onclick="location.reload()">Try again</button>
+        <a class="secondary" href="/">Go home</a>
+      </div>
+    </div>
+  </body>
+</html>`;
 }

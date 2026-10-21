@@ -1,557 +1,454 @@
-import { useEffect, useState } from "react";
-import {
-  Sparkles,
-  Check,
-  Bell,
-  Smartphone,
-  Eye,
-  ShieldCheck,
-  ArrowRight,
-  ArrowLeft,
-  CheckCircle2,
-  Clock,
-  HeartHandshake,
-  ExternalLink,
-} from "lucide-react";
+import { InteractiveOnboarding } from "@/components/InteractiveOnboarding";
+import { SmartPermissionsModal } from "@/components/SmartPermissionsModal";
+import { StatusBar } from "@capacitor/status-bar";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation } from "@tanstack/react-router";
+import { Home, ListChecks, Moon, BarChart3, Bot, Users, Settings, Clock } from "lucide-react";
+import { useApp, today, PRAYERS, type Profile } from "@/lib/store";
 import { useT } from "@/lib/i18n";
-import { useApp, type Profile } from "@/lib/store";
+import { showNow, startAlarmSound, stopAlarmSound, syncNativeSchedules, isNative, playTone } from "@/lib/notify";
+import { supabase, syncStatsToCloud } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
-import {
-  getNativeReelsStats,
-  openNativeAccessibilitySettings,
-  openNativeOverlaySettings,
-  openNativeUsageSettings,
-  openNativeNotificationSettings,
-  type NativeReelsStats,
-} from "@/lib/native-reels";
 
-interface Props {
-  onComplete: () => void;
-  isInitial?: boolean;
+const NAV = [
+  { to: "/", icon: Home, k: "home" },
+  { to: "/plan", icon: ListChecks, k: "plan" },
+  { to: "/prayer", icon: Moon, k: "prayer" },
+  { to: "/analytics", icon: BarChart3, k: "analytics" },
+  { to: "/ai", icon: Bot, k: "ai" },
+  { to: "/friends", icon: Users, k: "friends" },
+  { to: "/settings", icon: Settings, k: "settings" },
+] as const;
+
+function useHydrated() {
+  const [h, setH] = useState(false);
+  useEffect(() => setH(true), []);
+  return h;
 }
 
-export function InteractiveOnboarding({ onComplete, isInitial = false }: Props) {
+function Onboarding() {
   const t = useT();
-  const { profile, setProfile, lang, setLang } = useApp();
-  const isBn = lang === "bn";
+  const setProfile = useApp((s) => s.setProfile);
+  const [p, setP] = useState<Profile>({ name: "", birth: "", goal: "" });
+  const lang = useApp((s) => s.lang);
+  const setLang = useApp((s) => s.setLang);
+  return (
+    <div className="mx-auto flex min-h-dvh max-w-md flex-col justify-center gap-6 p-6">
+      <div className="flex justify-end">
+        <button className="glass px-3 py-1 text-sm rounded-lg" onClick={() => setLang(lang === "bn" ? "en" : "bn")}>
+          {lang === "bn" ? "English" : "বাংলা"}
+        </button>
+      </div>
+      <div>
+        <h1 className="text-4xl font-bold">{t("appName")}</h1>
+        <p className="mt-2 text-muted-foreground">{t("welcome")}</p>
+      </div>
+      <form
+        className="glass flex flex-col gap-4 p-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (p.name.trim()) setProfile(p);
+        }}
+      >
+        <Field label={t("name")}>
+          <input required value={p.name} onChange={(e) => setP({ ...p, name: e.target.value })} className="input" />
+        </Field>
+        <Field label={t("birth")}>
+          <input type="date" value={p.birth} onChange={(e) => setP({ ...p, birth: e.target.value })} className="input" />
+        </Field>
+        <Field label={t("mainGoal")}>
+          <input value={p.goal} onChange={(e) => setP({ ...p, goal: e.target.value })} className="input" />
+        </Field>
+        <button className="rounded-xl bg-primary py-3 font-semibold text-primary-foreground">{t("start")}</button>
+      </form>
+    </div>
+  );
+}
 
-  const [step, setStep] = useState<number>(1);
-  const [name, setName] = useState(profile?.name || "");
-  const [goal, setGoal] = useState(profile?.goal || (isBn ? "৫ ওয়াক্ত নামাজ ও ডিজিটাল ডিটক্স" : "5 daily prayers & digital detox"));
+export function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1.5 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      {children}
+    </label>
+  );
+}
 
-  // Interactive Dummy Test State
-  const [dummyPrayers, setDummyPrayers] = useState<Record<string, boolean>>({
-    fajr: true,
-    dhuhr: true,
-    asr: false,
-    maghrib: false,
-    isha: false,
-  });
-  const [dummyHabitDone, setDummyHabitDone] = useState(false);
-  const [testSuccessNotice, setTestSuccessNotice] = useState(false);
+interface Alarm {
+  id: string;
+  title: string;
+  prayer?: (typeof PRAYERS)[number] | undefined;
+}
 
-  // Live Native Permission Stats
-  const [nativeStats, setNativeStats] = useState<NativeReelsStats>(() => getNativeReelsStats());
-
-  const refreshPerms = () => {
-    setNativeStats(getNativeReelsStats());
-  };
+function useScheduler(onAggressive: (a: Alarm) => void) {
+  const t = useT();
+  const fired = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    refreshPerms();
-    const onFocus = () => refreshPerms();
-    const onVis = () => {
-      if (document.visibilityState === "visible") refreshPerms();
+    const tick = () => {
+      const s = useApp.getState();
+      const d = new Date();
+      const nowMin = d.getHours() * 60 + d.getMinutes();
+      const day = today(d);
+
+      // Strict rule: only items that HAVE a non-empty time
+      const entries = [
+        ...s.prayers
+          .filter((p) => p.time && p.time.trim() !== "")
+          .map((p) => ({
+            id: "p-" + p.key,
+            title: `${t("timeFor")}: ${t(p.key)}`,
+            time: p.time,
+            mode: p.notify,
+            done: (p.doneDates || []).includes(day),
+            prayer: p.key,
+          })),
+        ...s.items
+          .filter((i) => i.time && i.time.trim() !== "")
+          .map((i) => ({
+            id: i.id,
+            title: i.title,
+            time: i.time,
+            mode: i.notify,
+            done: (i.doneDates || []).includes(day),
+            prayer: undefined,
+          })),
+      ];
+
+      if (!s.notificationsEnabled) return;
+
+      for (const e of entries) {
+        if (e.mode === "off" || !e.time || e.done) continue;
+        const [h = 0, m = 0] = e.time.split(":").map(Number);
+        const itemMin = h * 60 + m;
+        const diff = nowMin - itemMin;
+        if (diff !== 0) continue;
+
+        const key = `${e.id}-${day}`;
+        if (fired.current.has(key)) continue;
+        fired.current.add(key);
+
+        // Add to in-app notification center
+        s.addAppNotification(
+          e.prayer ? "prayer" : "reminder",
+          e.title,
+          s.lang === "bn" ? "নির্ধারিত সময় উপস্থিত হয়েছে।" : "Scheduled time has arrived."
+        );
+
+        showNow(e.title, "⏰");
+        playTone(s.remindTone);
+
+        if (e.mode === "aggressive") {
+          onAggressive({ id: e.id, title: e.title, prayer: e.prayer });
+        }
+      }
     };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVis);
-    const iv = setInterval(refreshPerms, 2000);
+
+    tick();
+    const iv = setInterval(tick, 30000);
+    return () => clearInterval(iv);
+  }, [t, onAggressive]);
+
+  // native schedules
+  const prayers = useApp((s) => s.prayers);
+  const items = useApp((s) => s.items);
+  useEffect(() => {
+    if (!isNative()) return;
+    const day = today();
+    const notifsOn = useApp.getState().notificationsEnabled;
+    syncNativeSchedules(
+      prayers,
+      items,
+      (k) => t(k as never),
+      (id) =>
+        id.startsWith("p-")
+          ? !!(prayers.find((p) => "p-" + p.key === id)?.doneDates || []).includes(day)
+          : !!(items.find((i) => i.id === id)?.doneDates || []).includes(day),
+      notifsOn
+    ).catch(() => {});
+  }, [prayers, items, t]);
+
+  // Native notification action clicks (Mark done / Snooze directly from notification shade)
+  useEffect(() => {
+    if (!isNative()) return;
+    let removeSub: (() => void) | undefined;
+    (async () => {
+      try {
+        const { LocalNotifications } = await import("@capacitor/local-notifications");
+        const handle = await LocalNotifications.addListener("localNotificationActionPerformed", (action) => {
+          const extra = (action.notification.extra as any) || {};
+          const currentDay = today();
+          if (action.actionId === "mark_done") {
+            if (extra.prayerKey) {
+              useApp.getState().markPrayer(extra.prayerKey, currentDay, true);
+            } else if (extra.itemId) {
+              useApp.getState().toggleItem(extra.itemId, currentDay);
+            }
+          } else if (action.actionId === "snooze") {
+            const snoozeTarget = new Date(Date.now() + 15 * 60 * 1000);
+            LocalNotifications.schedule({
+              notifications: [
+                {
+                  id: Math.floor(Math.random() * 100000) + 60000,
+                  title: `⏰ স্নুজ রিমাইন্ডার: ${action.notification.title}`,
+                  body: action.notification.body,
+                  schedule: { at: snoozeTarget, allowWhileIdle: true },
+                  sound: "beep.wav",
+                  channelId: action.notification.channelId || "prayer_channel_v2",
+                  actionTypeId: action.notification.actionTypeId,
+                  extra: action.notification.extra,
+                },
+              ],
+            }).catch(() => {});
+          }
+        });
+        removeSub = () => handle.remove();
+      } catch (err) {
+        console.warn("Could not register localNotificationActionPerformed listener:", err);
+      }
+    })();
     return () => {
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVis);
-      clearInterval(iv);
+      if (removeSub) removeSub();
     };
   }, []);
+}
 
-  const totalDummyActions = 6;
-  const dummyDoneCount =
-    Object.values(dummyPrayers).filter(Boolean).length + (dummyHabitDone ? 1 : 0);
-  const dummyProgressPct = Math.round((dummyDoneCount / totalDummyActions) * 100);
+/** ELEGANT APP SPLASH ANIMATION */
+function SplashAnimation({ show, onFinish }: { show: boolean; onFinish: () => void }) {
+  const [fading, setFading] = useState(false);
+  const lang = useApp((s) => s.lang);
 
-  const handleToggleDummyPrayer = (key: string) => {
-    setDummyPrayers((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      setTestSuccessNotice(true);
-      return next;
-    });
-  };
+  useEffect(() => {
+    if (show) {
+      setFading(false);
+      const timer1 = setTimeout(() => setFading(true), 1200);
+      const timer2 = setTimeout(() => {
+        onFinish();
+      }, 1500);
+      return () => {
+        clearTimeout(timer1);
+        clearTimeout(timer2);
+      };
+    }
+  }, [show, onFinish]);
 
-  const handleToggleDummyHabit = () => {
-    setDummyHabitDone((prev) => {
-      setTestSuccessNotice(true);
-      return !prev;
-    });
-  };
-
-  const handleFinish = () => {
-    const finalProfile: Profile = {
-      name: name.trim() || (isBn ? "মুসাফির" : "Seeker"),
-      birth: profile?.birth || "",
-      goal: goal.trim(),
-    };
-    setProfile(finalProfile);
-    localStorage.setItem("noor_onboarding_completed", "true");
-    onComplete();
-  };
+  if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 p-4 backdrop-blur-2xl overflow-y-auto">
-      <div className="glass my-auto flex w-full max-w-lg flex-col gap-5 p-5 sm:p-7 shadow-2xl border-primary/30 animate-in fade-in zoom-in-95 duration-200">
-        
-        {/* TOP BAR: Language selector & step indicator */}
-        <div className="flex items-center justify-between border-b border-border/60 pb-3">
-          <div className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-lg bg-primary/20 text-xs font-bold text-primary">
-              {step}/4
-            </span>
-            <span className="text-xs font-medium text-muted-foreground">
-              {step === 1 && (isBn ? "পরিচিতি ও প্রোফাইল" : "Welcome & Profile")}
-              {step === 2 && (isBn ? "ইন্টারঅ্যাক্টিভ ডামি টেস্ট" : "Interactive Demo Test")}
-              {step === 3 && (isBn ? "স্মার্ট পারমিশন গাইড" : "Smart Permissions")}
-              {step === 4 && (isBn ? "সব প্রস্তুত!" : "Ready to Go!")}
-            </span>
-          </div>
+    <div
+      onClick={onFinish}
+      className={cn(
+        "fixed inset-0 z-[100] flex flex-col items-center justify-center bg-background transition-opacity duration-300 cursor-pointer",
+        fading ? "opacity-0 pointer-events-none" : "opacity-100"
+      )}
+    >
+      <div className="relative flex flex-col items-center">
+        {/* Glowing Aura Ring */}
+        <div className="absolute -inset-4 rounded-full bg-primary/20 blur-xl animate-pulse" />
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setLang(isBn ? "en" : "bn")}
-              className="rounded-lg bg-secondary px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground transition"
-            >
-              {isBn ? "English" : "বাংলা"}
-            </button>
-            {!isInitial && (
-              <button
-                type="button"
-                onClick={onComplete}
-                className="rounded-lg p-1 text-muted-foreground hover:text-foreground text-xs"
-              >
-                ✕
-              </button>
-            )}
-          </div>
+        {/* Crescent Moon Container */}
+        <div className="relative grid size-20 place-items-center rounded-3xl bg-primary/10 border border-primary/30 shadow-2xl animate-in zoom-in-75 duration-400">
+          <Moon className="size-10 fill-primary text-primary transition-transform duration-700" />
         </div>
 
-        {/* STEP 1: WELCOME & PROFILE */}
-        {step === 1 && (
-          <div className="flex flex-col gap-4 animate-in fade-in">
-            <div className="text-center sm:text-left">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-3 py-1 text-xs font-semibold text-primary">
-                <Sparkles className="size-3.5" />
-                {isBn ? "নূর হ্যাবিট স্বাগতম" : "Welcome to Noor Habit"}
-              </span>
-              <h1 className="mt-2 text-2xl font-black tracking-tight text-foreground sm:text-3xl">
-                {isBn ? "আপনার রুটিন ও আখিরাতের প্রস্তুতি" : "Your Daily Islamic Routine & Detox"}
-              </h1>
-              <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
-                {isBn
-                  ? "নামাজ ট্র্যাকিং, স্মার্ট রিলস ডিটক্স, ফ্রেন্ডস লিডারবোর্ড এবং ইসলামিক হ্যাবিট একসাথে এক জায়গায়।"
-                  : "Prayer tracking, smart reels detox, friends leaderboard, and daily habits in one place."}
-              </p>
-            </div>
+        {/* Title & Slogan */}
+        <h1 className="mt-4 text-2xl font-black tracking-wide text-foreground">
+          Noor Habit
+        </h1>
+        <p className="mt-1 text-xs font-medium text-primary tracking-widest uppercase">
+          {lang === "bn" ? "ইসলামিক লাইফস্টাইল ও অভ্যাস ট্র্যাকার" : "Islamic Lifestyle & Habit Tracker"}
+        </p>
 
-            <div className="flex flex-col gap-3 rounded-2xl bg-secondary/40 p-4 border border-border/70">
-              <div>
-                <label className="text-xs font-semibold text-foreground">
-                  {isBn ? "আপনার নাম বা ডাকনাম" : "Your Name"}
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder={isBn ? "যেমন: তানভীর হাসান" : "e.g. Tanvir"}
-                  className="input mt-1.5 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="text-xs font-semibold text-foreground">
-                  {isBn ? "মূল লক্ষ্য (অপশনাল)" : "Main Goal (Optional)"}
-                </label>
-                <input
-                  type="text"
-                  value={goal}
-                  onChange={(e) => setGoal(e.target.value)}
-                  placeholder={isBn ? "৫ ওয়াক্ত নামাজ ও ডিজিটাল ডিটক্স" : "5 daily prayers & digital detox"}
-                  className="input mt-1.5 text-sm"
-                />
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                if (name.trim()) setStep(2);
-              }}
-              disabled={!name.trim()}
-              className="mt-2 flex items-center justify-center gap-2 rounded-xl bg-primary py-3 font-semibold text-primary-foreground shadow-lg transition hover:opacity-90 disabled:opacity-50"
-            >
-              <span>{isBn ? "পরবর্তী: ডামি টেস্ট দেখুন" : "Next: Try Interactive Test"}</span>
-              <ArrowRight className="size-4" />
-            </button>
-          </div>
-        )}
-
-        {/* STEP 2: INTERACTIVE DUMMY TEST */}
-        {step === 2 && (
-          <div className="flex flex-col gap-4 animate-in fade-in">
-            <div>
-              <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
-                <CheckCircle2 className="size-3.5" />
-                {isBn ? "হাতে-কলমে পরীক্ষা (Dummy Test)" : "Hands-on Dummy Test"}
-              </span>
-              <h2 className="mt-1 text-xl font-bold text-foreground">
-                {isBn ? "নিচে ক্লিক করে টেস্ট করে দেখুন!" : "Tap below to test how Noor Habit works!"}
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {isBn
-                  ? "নামাজের কার্ড বা অভ্যাসে ক্লিক করুন। দেখুন সম্পন্ন হওয়া লেখাগুলো সম্পূর্ণ স্পষ্ট ও সহজে পড়া যায়।"
-                  : "Tap a prayer card or habit to see the crisp completion state without illegible strikethrough."}
-              </p>
-            </div>
-
-            {/* LIVE DUMMY PROGRESS BAR */}
-            <div className="rounded-xl border border-primary/20 bg-primary/10 p-3">
-              <div className="flex items-center justify-between text-xs font-semibold">
-                <span className="text-foreground">{isBn ? "আজকের রুটিন অগ্রগতি" : "Today's Routine Progress"}</span>
-                <span className="text-primary font-mono">{dummyProgressPct}%</span>
-              </div>
-              <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-secondary">
-                <div
-                  className="h-full bg-primary transition-all duration-300"
-                  style={{ width: `${dummyProgressPct}%` }}
-                />
-              </div>
-            </div>
-
-            {/* DUMMY PRAYERS */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                {isBn ? "১. ওয়াক্তের নামাজ টেস্ট করুন" : "1. Test Prayer Cards"}
-              </span>
-              <div className="grid grid-cols-5 gap-1.5">
-                {[
-                  { k: "fajr", nameBn: "ফজর", nameEn: "Fajr", time: "05:08 AM" },
-                  { k: "dhuhr", nameBn: "যোহর", nameEn: "Dhuhr", time: "12:05 PM" },
-                  { k: "asr", nameBn: "আসর", nameEn: "Asr", time: "04:15 PM" },
-                  { k: "maghrib", nameBn: "মাগরিব", nameEn: "Maghrib", time: "05:58 PM" },
-                  { k: "isha", nameBn: "এশা", nameEn: "Isha", time: "07:15 PM" },
-                ].map((item) => {
-                  const done = dummyPrayers[item.k];
-                  return (
-                    <button
-                      key={item.k}
-                      type="button"
-                      onClick={() => handleToggleDummyPrayer(item.k)}
-                      className={cn(
-                        "flex flex-col items-center gap-1 rounded-xl py-2.5 px-1 text-xs transition active:scale-95",
-                        done
-                          ? "bg-primary text-primary-foreground font-bold shadow-md shadow-primary/20"
-                          : "bg-secondary/70 hover:bg-secondary text-foreground"
-                      )}
-                    >
-                      {done ? <Check className="size-4 stroke-[3]" /> : <span className="size-4 opacity-40">○</span>}
-                      <span className="truncate text-[11px]">{isBn ? item.nameBn : item.nameEn}</span>
-                      <span className="text-[9px] opacity-80 font-mono">{item.time}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* DUMMY HABIT */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                {isBn ? "২. দৈনিক অভ্যাস টেস্ট করুন" : "2. Test Daily Habit"}
-              </span>
-              <div
-                onClick={handleToggleDummyHabit}
-                className={cn(
-                  "flex items-center justify-between rounded-xl p-3 text-xs transition cursor-pointer border",
-                  dummyHabitDone
-                    ? "bg-primary/10 border-primary/40 text-foreground"
-                    : "bg-secondary/50 border-border/80 hover:bg-secondary/70"
-                )}
-              >
-                <div className="flex items-center gap-2.5">
-                  <div
-                    className={cn(
-                      "grid size-6 place-items-center rounded-full border transition",
-                      dummyHabitDone
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-muted-foreground/60 text-transparent"
-                    )}
-                  >
-                    <Check className="size-3.5 stroke-[3]" />
-                  </div>
-                  <div>
-                    <span className="font-semibold text-xs text-foreground">
-                      {isBn ? "কুরআন তেলাওয়াত (১ পৃষ্ঠা)" : "Quran Recitation (1 page)"}
-                    </span>
-                    <p className="text-[10px] text-muted-foreground">06:00 AM</p>
-                  </div>
-                </div>
-
-                {dummyHabitDone ? (
-                  <span className="inline-flex items-center gap-1 rounded-md bg-primary/20 px-2 py-0.5 text-[10px] font-bold text-primary">
-                    ✓ {isBn ? "সম্পন্ন" : "Done"}
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-muted-foreground">{isBn ? "ট্যাপ করুন" : "Tap"}</span>
-                )}
-              </div>
-            </div>
-
-            {testSuccessNotice && (
-              <div className="rounded-lg bg-emerald-500/15 border border-emerald-500/30 p-2 text-center text-xs text-emerald-400 font-medium animate-in fade-in">
-                ✓ {isBn ? "দারুণ! লেখা সম্পূর্ণ স্পষ্ট এবং পড়া সহজ।" : "Great! Completed text stays crisp and easy to read."}
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setStep(1)}
-                className="flex items-center justify-center gap-1 rounded-xl bg-secondary px-4 py-3 text-xs font-semibold text-foreground hover:bg-muted transition"
-              >
-                <ArrowLeft className="size-4" />
-                <span>{isBn ? "পেছনে" : "Back"}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setStep(3)}
-                className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-primary py-3 font-semibold text-primary-foreground shadow transition hover:opacity-90"
-              >
-                <span>{isBn ? "পরবর্তী: পারমিশন সেটআপ" : "Next: Setup Permissions"}</span>
-                <ArrowRight className="size-4" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 3: SMART PERMISSIONS & REELS TRACKER */}
-        {step === 3 && (
-          <div className="flex flex-col gap-4 animate-in fade-in">
-            <div>
-              <span className="inline-flex items-center gap-1 text-xs font-semibold text-primary">
-                <ShieldCheck className="size-3.5" />
-                {isBn ? "স্মার্ট পারমিশন গাইড" : "Smart Permissions Setup"}
-              </span>
-              <h2 className="mt-1 text-xl font-bold text-foreground">
-                {isBn ? "স্মার্ট রিলস ও নোটিফিকেশন সুবিধা" : "Enable Smart Reels & Notification Features"}
-              </h2>
-              <p className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                {isBn
-                  ? "ইউটিউব শর্টস, ইনস্টাগ্রাম ও ফেসবুক রিলসে ২-৩ সেকেন্ডের বেশি সময় কাটালে স্বয়ংক্রিয়ভাবে কাউন্ট করতে নিচের পারমিশনগুলো প্রয়োজন।"
-                  : "Required to accurately count reels watched for 2-3+ seconds on YouTube, Instagram and Facebook."}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2.5">
-              
-              {/* 1. Notifications */}
-              <div className="flex items-center justify-between rounded-xl border border-border/70 bg-secondary/40 p-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="grid size-9 place-items-center rounded-xl bg-primary/20 text-primary">
-                    <Bell className="size-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-foreground">
-                      {isBn ? "ওয়াক্তের ইনসিস্টেন্ট এলার্ম" : "Prayer Alarms & Notifications"}
-                    </h3>
-                    <p className="text-[10px] text-muted-foreground">
-                      {isBn ? "ওয়াক্ত শেষ হওয়ার আগেই সতর্কবার্তা" : "Alerts before prayer times pass"}
-                    </p>
-                  </div>
-                </div>
-                {nativeStats.hasNotifications ? (
-                  <span className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-xs font-bold text-emerald-400">
-                    {isBn ? "✓ সক্রিয়" : "✓ Active"}
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => openNativeNotificationSettings()}
-                    className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow hover:opacity-90 transition"
-                  >
-                    <span>{isBn ? "অনুমতি দিন" : "Grant"}</span>
-                    <ExternalLink className="size-3" />
-                  </button>
-                )}
-              </div>
-
-              {/* 2. Accessibility Service (Reels Tracking) */}
-              <div className="flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 p-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="grid size-9 place-items-center rounded-xl bg-primary/20 text-primary">
-                    <Smartphone className="size-4" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <h3 className="text-xs font-bold text-foreground">
-                        {isBn ? "রিলস ও শর্টস ট্র্যাকার" : "Smart Reels Tracker"}
-                      </h3>
-                      <span className="rounded bg-primary/20 px-1 py-0.2 text-[9px] font-bold text-primary">
-                        2-3s Dwell
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-muted-foreground">
-                      {isBn ? "Accessibility Service চালু করুন" : "Enable Accessibility Service"}
-                    </p>
-                  </div>
-                </div>
-                {nativeStats.hasAccessibility ? (
-                  <span className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-xs font-bold text-emerald-400">
-                    {isBn ? "✓ সক্রিয়" : "✓ Active"}
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => openNativeAccessibilitySettings()}
-                    className="inline-flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow hover:opacity-90 transition"
-                  >
-                    <span>{isBn ? "সেটিংস খুলুন" : "Open Settings"}</span>
-                    <ExternalLink className="size-3" />
-                  </button>
-                )}
-              </div>
-
-              {/* 3. Display Over Other Apps (Floating Pill) */}
-              <div className="flex items-center justify-between rounded-xl border border-border/70 bg-secondary/40 p-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="grid size-9 place-items-center rounded-xl bg-primary/20 text-primary">
-                    <Eye className="size-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-foreground">
-                      {isBn ? "ভাসমান রিলস কাউন্টার" : "Floating Reels Counter Pill"}
-                    </h3>
-                    <p className="text-[10px] text-muted-foreground">
-                      {isBn ? "সোশ্যাল মিডিয়া স্ক্রিনের উপরে কাউন্ট দেখাবে" : "Small floating pill over social media"}
-                    </p>
-                  </div>
-                </div>
-                {nativeStats.hasOverlay ? (
-                  <span className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-xs font-bold text-emerald-400">
-                    {isBn ? "✓ সক্রিয়" : "✓ Active"}
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => openNativeOverlaySettings()}
-                    className="inline-flex items-center gap-1 rounded-lg bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted transition"
-                  >
-                    <span>{isBn ? "অনুমতি দিন" : "Grant Overlay"}</span>
-                    <ExternalLink className="size-3" />
-                  </button>
-                )}
-              </div>
-
-              {/* 4. Usage Access (Screen On Time) */}
-              <div className="flex items-center justify-between rounded-xl border border-border/70 bg-secondary/40 p-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="grid size-9 place-items-center rounded-xl bg-primary/20 text-primary">
-                    <Clock className="size-4" />
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-bold text-foreground">
-                      {isBn ? "স্ক্রিন অন টাইম (SOT)" : "Screen On Time (SOT)"}
-                    </h3>
-                    <p className="text-[10px] text-muted-foreground">
-                      {isBn ? "দৈনিক মোট স্ক্রিন ব্যবহারের হিসাব" : "Daily device usage analytics"}
-                    </p>
-                  </div>
-                </div>
-                {nativeStats.hasUsage ? (
-                  <span className="rounded-lg bg-emerald-500/20 px-2.5 py-1.5 text-xs font-bold text-emerald-400">
-                    {isBn ? "✓ সক্রিয়" : "✓ Active"}
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => openNativeUsageSettings()}
-                    className="inline-flex items-center gap-1 rounded-lg bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground hover:bg-muted transition"
-                  >
-                    <span>{isBn ? "অনুমতি দিন" : "Grant Usage"}</span>
-                    <ExternalLink className="size-3" />
-                  </button>
-                )}
-              </div>
-
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setStep(2)}
-                className="flex items-center justify-center gap-1 rounded-xl bg-secondary px-4 py-3 text-xs font-semibold text-foreground hover:bg-muted transition"
-              >
-                <ArrowLeft className="size-4" />
-                <span>{isBn ? "পেছনে" : "Back"}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setStep(4)}
-                className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-primary py-3 font-semibold text-primary-foreground shadow transition hover:opacity-90"
-              >
-                <span>{isBn ? "পরবর্তী ধাপ" : "Next Step"}</span>
-                <ArrowRight className="size-4" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 4: READY TO GO */}
-        {step === 4 && (
-          <div className="flex flex-col gap-4 text-center animate-in fade-in">
-            <div className="mx-auto grid size-16 place-items-center rounded-full bg-primary/20 text-3xl text-primary animate-bounce">
-              🕌
-            </div>
-            <div>
-              <h2 className="text-2xl font-black text-foreground">
-                {isBn ? "মাশাআল্লাহ, আপনি প্রস্তুত!" : "MashaAllah, You're Ready!"}
-              </h2>
-              <p className="mt-1.5 text-xs text-muted-foreground leading-relaxed">
-                {isBn
-                  ? "প্রতিদিন সময়মতো নামাজ আদায় করুন, অযথা রিলস স্ক্রল নিয়ন্ত্রণ করুন এবং ফ্রেন্ডস সেকশনে বন্ধুদের সাথে প্রতিদ্বন্দ্বিতা করুন।"
-                  : "Keep your prayers on time, stay mindful of reels scrolling, and challenge your friends on the leaderboard."}
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-border/80 bg-secondary/30 p-3 text-left">
-              <div className="flex items-center gap-2 text-xs font-semibold text-foreground">
-                <HeartHandshake className="size-4 text-primary" />
-                <span>{isBn ? "ফ্রেন্ডস সেকশন টিপস" : "Friends Section Tips"}</span>
-              </div>
-              <ul className="mt-1.5 list-inside list-disc text-[11px] text-muted-foreground space-y-1">
-                <li>{isBn ? "লিডারবোর্ডে শুধুমাত্র আপনার ফ্রেন্ড লিস্টের সদস্যরা থাকবে।" : "Leaderboard only shows you and accepted friends."}</li>
-                <li>{isBn ? "যেকোনো বন্ধুর নামের ওপর ক্লিক করে তার বিস্তারিত অ্যানালিটিক্স দেখতে পারবেন।" : "Tap any friend's row to view their detailed analytics."}</li>
-                <li>{isBn ? "ওভারঅল, নামাজ, স্ক্রিন টাইম এবং রিলস কাউন্ট ফিল্টার দিয়ে র‍্যাংক দেখুন।" : "Filter by overall, prayers, screen time, or reels count."}</li>
-              </ul>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleFinish}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3.5 text-base font-bold text-primary-foreground shadow-xl transition hover:opacity-90"
-            >
-              <span>{isBn ? "নূর হ্যাবিট শুরু করুন" : "Launch Noor Habit"}</span>
-              <Sparkles className="size-5" />
-            </button>
-          </div>
-        )}
+        {/* Subtle indicator */}
+        <div className="mt-5 flex items-center gap-1.5">
+          <span className="size-1.5 rounded-full bg-primary animate-ping" />
+          <span className="text-[11px] text-muted-foreground">
+            {lang === "bn" ? "প্রস্তুত হচ্ছে..." : "Loading..."}
+          </span>
+        </div>
       </div>
+    </div>
+  );
+}
+
+export function AppShell({ children }: { children: ReactNode }) {
+  const hydrated = useHydrated();
+  const profile = useApp((s) => s.profile);
+  const theme = useApp((s) => s.theme);
+  const lang = useApp((s) => s.lang);
+  const t = useT();
+  const loc = useLocation();
+  const [alarm, setAlarm] = useState<Alarm | null>(null);
+  const markPrayer = useApp((s) => s.markPrayer);
+  const toggleItem = useApp((s) => s.toggleItem);
+  const earlyCheckWarning = useApp((s) => s.earlyCheckWarning);
+  const setEarlyCheckWarning = useApp((s) => s.setEarlyCheckWarning);
+
+  // App Startup Splash (only once on launch)
+  const [showSplash, setShowSplash] = useState(true);
+
+  useEffect(() => {
+    document.documentElement.dataset["theme"] = theme;
+    document.documentElement.lang = lang;
+  }, [theme, lang]);
+
+  // Set native status bar overlay on mount
+  useEffect(() => {
+    if (isNative()) {
+      StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+    }
+  }, []);
+
+  const onAggr = useRef((a: Alarm) => {
+    setAlarm(a);
+    startAlarmSound();
+  }).current;
+  useScheduler(onAggr);
+
+  // Auto sync to cloud when state changes
+  const prayers = useApp((s) => s.prayers);
+  const items = useApp((s) => s.items);
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (data.user) {
+        let st = 0;
+        const d = new Date();
+        for (let i = 0; i < 60; i++) {
+          const prev = new Date();
+          prev.setDate(d.getDate() - (i + 1));
+          const z = new Date(prev.getTime() - prev.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+          if (prayers.every((p) => (p.doneDates || []).includes(z))) st++;
+          else break;
+        }
+        const todayStr = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+        if (prayers.every((p) => (p.doneDates || []).includes(todayStr))) st++;
+
+        syncStatsToCloud(data.user, profile?.name || "", prayers, items, st);
+      }
+    });
+  }, [prayers, items, profile]);
+
+  if (!hydrated) return null;
+  const onboardingCompleted = typeof window !== "undefined" && localStorage.getItem("noor_onboarding_completed") === "true";
+  if (!profile || !onboardingCompleted) {
+    return <InteractiveOnboarding onComplete={() => {}} isInitial={true} />;
+  }
+
+  const confirm = async () => {
+    if (alarm) {
+      if (alarm.prayer) markPrayer(alarm.prayer, today(), true);
+      else toggleItem(alarm.id);
+    }
+    stopAlarmSound();
+    setAlarm(null);
+    if (isNative()) {
+      const s = useApp.getState();
+      await syncNativeSchedules(s.prayers, s.items, (k) => t(k as never), () => true).catch(() => {});
+    }
+  };
+
+  const isAiRoute = loc.pathname === "/ai";
+
+  return (
+    <div className="mx-auto flex min-h-dvh max-w-5xl md:gap-4 md:p-4">
+      {/* APP SPLASH ANIMATION */}
+      <SplashAnimation show={showSplash} onFinish={() => setShowSplash(false)} />
+
+      {/* SIDEBAR NAVIGATION (DESKTOP) */}
+      <nav className="glass sticky top-4 hidden h-[calc(100dvh-2rem)] w-20 flex-col items-center gap-2 py-4 md:flex">
+        {NAV.map((n) => (
+          <Link
+            key={n.to}
+            to={n.to}
+            title={t(n.k)}
+            className={cn(
+              "grid size-11 place-items-center rounded-xl text-muted-foreground transition hover:text-foreground",
+              loc.pathname === n.to && "glow-on text-primary"
+            )}
+          >
+            <n.icon className="size-5" />
+          </Link>
+        ))}
+      </nav>
+
+      {/* MAIN CONTENT AREA */}
+      <main
+        className={cn(
+          "flex-1 px-4 pt-[max(3rem,calc(env(safe-area-inset-top,0px)+1.5rem))] md:pt-4 md:pb-8 w-full",
+          isAiRoute ? "pb-20 h-[100dvh] overflow-hidden flex flex-col" : "pb-36"
+        )}
+      >
+        {children}
+      </main>
+
+      {/* BOTTOM NAVIGATION (MOBILE) */}
+      <nav
+        className="fixed inset-x-0 bottom-0 z-40 flex justify-around px-2 pt-2.5 border-t border-border/80 bg-card/95 backdrop-blur-2xl shadow-2xl md:hidden"
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom, 14px))" }}
+      >
+        {NAV.map((n) => (
+          <Link
+            key={n.to}
+            to={n.to}
+            className={cn(
+              "flex flex-1 flex-col items-center gap-0.5 rounded-xl py-1.5 text-[10px] text-muted-foreground transition",
+              loc.pathname === n.to && "glow-on text-primary"
+            )}
+          >
+            <n.icon className="size-5" />
+            {t(n.k)}
+          </Link>
+        ))}
+      </nav>
+
+      {/* AGGRESSIVE ALARM MODAL */}
+      {alarm && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-background/80 p-6 backdrop-blur-xl animate-in fade-in">
+          <div className="glass flex w-full max-w-sm flex-col items-center gap-5 p-8 text-center shadow-2xl">
+            <div className="glow-on grid size-20 animate-pulse place-items-center rounded-full text-4xl">🔔</div>
+            <h2 className="text-2xl font-bold">{alarm.title}</h2>
+            <button
+              onClick={confirm}
+              className="w-full rounded-xl bg-primary py-4 text-lg font-semibold text-primary-foreground shadow-lg hover:opacity-90 transition"
+            >
+              {alarm.prayer ? t("iPrayed") : "✓"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* SMART SYSTEM PERMISSIONS CHECKER MODAL */}
+      <SmartPermissionsModal />
+
+      {/* EARLY CHECK TIME RESTRICTION MODAL */}
+      {earlyCheckWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-4 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="glass flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl p-6 text-center shadow-2xl border border-primary/30">
+            <div className="relative grid size-16 place-items-center rounded-2xl bg-amber-500/15 text-amber-500 shadow-inner">
+              <Clock className="size-8 animate-pulse" />
+            </div>
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-bold text-foreground">
+                {lang === "bn" ? "সময়ের পূর্বে চেক করা যাবে না" : "Cannot Check Before Time"}
+              </h3>
+              <p className="text-xs text-muted-foreground leading-relaxed px-2">
+                {earlyCheckWarning.message}
+              </p>
+            </div>
+            <div className="rounded-xl bg-secondary/60 px-3 py-1.5 border border-border/40 text-xs font-medium text-foreground">
+              ⏰ {lang === "bn" ? "নির্ধারিত সময়:" : "Scheduled Time:"}{" "}
+              <span className="text-primary font-bold">{earlyCheckWarning.scheduledTime}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setEarlyCheckWarning(null)}
+              className="w-full rounded-xl bg-primary py-3 text-sm font-semibold text-primary-foreground shadow-md hover:opacity-90 transition active:scale-[0.98]"
+            >
+              {lang === "bn" ? "ঠিক আছে, বুঝতে পেরেছি" : "Got it"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
